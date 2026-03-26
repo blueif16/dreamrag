@@ -5,6 +5,60 @@
 
 ---
 
+## Product Update — 2026-03-25
+
+This snapshot reflects the current single-page frontend shell in `index.html`, with `preview.html` forwarding into that entry.
+
+The current UI is still a static prototype with shared styling in `theme.css`, but it now behaves as one web surface with hash-based view switching: `#home`, `#dashboard`, `#archive`, and `#profile`. The older files `homepage.html`, `dashboard.html`, `archive.html`, and `profile.html` are kept as reference fragments, not as the primary runtime entry. The product behavior described below captures the intended runtime architecture and backend responsibilities implied by those screens.
+
+### Frontend Architecture
+
+| Surface | Role | Current Prototype Surface | Intended Runtime Responsibility |
+|---------|------|---------------------------|---------------------------------|
+| `preview.html` | Entry route | Immediate redirect into the product | Bootstraps the app / hosted preview route |
+| `index.html` | Single-page shell | Owns the shared topbar, view switching, and unified app chrome | Becomes the main web app container |
+| `index.html#home` | Dream capture | Collect a new dream and start analysis | Create a dream record and launch analysis |
+| `index.html#dashboard` | Latest reading | Show the active dream, interpretation, follow-up chat, metrics, and sources | Read the latest dream, stream or fetch analysis, and continue contextual chat |
+| `index.html#archive` | Historical workspace | Browse saved dreams, inspect one dream, and continue archive-specific follow-up | Search, filter, compare, and reopen prior dream analyses |
+| `index.html#profile` | Long-term patterns | Summarize motifs, emotional climate, rhythm, and recurring threads | Serve user-level aggregates and recurring pattern insights |
+| `homepage.html`, `dashboard.html`, `archive.html`, `profile.html` | Reference fragments | Legacy standalone snapshots of each view | Editing reference only; no longer primary entrypoints |
+
+Shared frontend conventions in the prototype:
+
+- A persistent top navigation connects capture, latest reading, archive, and profile.
+- The same dream can be revisited through multiple surfaces: current reading, archive detail, and profile-level pattern summaries.
+- Source cards, follow-up prompts, and CTA buttons imply backend retrieval, provenance, and asynchronous analysis workflows even though they are not wired yet.
+
+### User Experience Flow
+
+1. The user lands on `preview.html`, which forwards into `index.html#home`.
+2. On the `#home` view, the user writes a dream entry and starts analysis.
+3. The app creates a dream record, launches retrieval + interpretation, and switches into `index.html#dashboard` as the primary reading surface.
+4. On the `#dashboard` view, the user reads the interpretation, sees emotional and symbolic summaries, checks provenance links, and asks follow-up questions grounded in the same dream.
+5. The user switches to `index.html#archive` to revisit prior dreams, compare entries across time, and continue conversations from a saved dream context.
+6. The user switches to `index.html#profile` to zoom out from single dreams into recurring motifs, emotional trends, cadence, and long-term reflection.
+7. The loop repeats from the persistent top navigation when the user records another dream; the latest reading, archive, and profile aggregates all update over time.
+
+### Backend Functions Implied by the Prototype
+
+| Surface | Backend capabilities required |
+|---------|-------------------------------|
+| `preview.html` | Static hosting or route redirect only; analytics optional |
+| `index.html#home` | User/session resolution, create dream record, persist raw dream text, enqueue analysis job, return job status, expose latest reading pointer |
+| `index.html#dashboard` | Fetch latest dream + structured interpretation, emotion extraction, symbol extraction, recurrence metrics, atmosphere/relationship graph data, follow-up chat with dream context, related-dream retrieval, citation/provenance lookup |
+| `index.html#archive` | List user dreams, pagination, filtering, full-text/tag search, fetch single dream detail, compare selected dream to past entries, archive-scoped follow-up chat, citation retrieval for saved readings |
+| `index.html#profile` | Compute and serve user-level aggregates such as streaks, top symbols, emotional distribution, recurrence rhythm, lucidity trend, dream frequency heatmap, and recurring theme summaries |
+
+Shared backend services implied across all pages:
+
+- Authentication and ownership for per-user dream data.
+- Dream storage for raw entries, timestamps, tags, and archive state.
+- Analysis storage for interpretations, extracted motifs, emotional labels, recurrence signals, and provenance links.
+- Retrieval over personal dreams, community dream corpora, and academic interpretation sources.
+- Chat memory scoped to a dream and optionally to a saved archive thread.
+- Async job orchestration for analysis pipelines that may not complete synchronously.
+- User-level aggregation jobs that periodically update profile insights from the dream corpus.
+
 ## 1. Vision
 
 DreamRAG is a RAG system that turns dream journals into a living dashboard. Users type into a single chat input — the LLM retrieves from three knowledge layers (community dreams, academic literature, personal dream DB) and dynamically composes a full-page bento-grid of glassmorphic widget cards. The AI decides which widgets to render, their sizes, and their data. Every card carries **provenance links** back to the originating chunks.
