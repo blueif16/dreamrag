@@ -210,6 +210,51 @@ All spawn tools accept `operation` param: `replace_all` (default, clears canvas)
 - `SYSTEM_PROMPT`: override orchestrator system prompt
 - Frontend env in `.env.local`, backend env in `backend/.env`
 
+## GCP Deployment (Docker Compose via SSH context)
+
+All 5 services (3 llama.cpp model servers + FastAPI backend + Next.js frontend) deploy from a single `docker-compose.yml` at the repo root. Models are bind-mounted from `~/models` on the VM — never baked into images.
+
+### One-time VM setup
+```bash
+# SSH into the GCP VM and run:
+# 1. Install Docker + NVIDIA Container Toolkit
+curl -fsSL https://get.docker.com | sh
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-ct.gpg
+# follow https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
+sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker
+
+# 2. Download models (once)
+pip install huggingface_hub[cli]
+huggingface-cli download Qwen/Qwen3-Embedding-0.6B-GGUF Qwen3-Embedding-0.6B-Q8_0.gguf --local-dir ~/models
+huggingface-cli download Qwen/Qwen3.5-9B-GGUF qwen3.5-9b-q4_k_m.gguf --local-dir ~/models
+huggingface-cli download Qwen/Qwen3.5-4B-GGUF qwen3.5-4b-q4_k_m.gguf --local-dir ~/models
+```
+
+### Deploy from local machine
+```bash
+# One-time: create SSH context pointing at GCP VM
+docker context create gcp-dreamrag --docker host=ssh://USER@GCP_VM_IP
+docker context use gcp-dreamrag
+
+# Deploy (builds images on the VM, starts all services)
+docker compose up -d --build
+
+# Switch back to local
+docker context use default
+```
+
+The backend reads `frontend/backend/.env` for Supabase creds and overrides `EMBED_BASE_URL` / LLM settings to point to the in-compose service hostnames (`chat-model`, `embed-model`).
+
+### Useful commands (run while on gcp-dreamrag context)
+```bash
+docker compose logs -f backend        # tail backend logs
+docker compose logs -f chat-model     # tail model server
+docker compose restart backend        # hot-restart after code change
+docker compose down                   # stop everything
+```
+
+---
+
 ## Bug Records & Architecture Decisions
 
 Detailed write-ups of past bugs and design decisions live in `docs/`:

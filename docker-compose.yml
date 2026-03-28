@@ -1,0 +1,85 @@
+services:
+  chat-model:
+    image: ghcr.io/ggerganov/llama.cpp:server-cuda
+    restart: unless-stopped
+    volumes:
+      - ${MODELS_DIR:-/root/models}:/models:ro
+    command: >
+      --model /models/qwen3.5-9b-q4_k_m.gguf
+      --host 0.0.0.0 --port 8081
+      --ctx-size 32768 --n-gpu-layers 99
+      --flash-attn --cont-batching
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  embed-model:
+    image: ghcr.io/ggerganov/llama.cpp:server-cuda
+    restart: unless-stopped
+    volumes:
+      - ${MODELS_DIR:-/root/models}:/models:ro
+    command: >
+      --model /models/Qwen3-Embedding-0.6B-Q8_0.gguf
+      --host 0.0.0.0 --port 8082
+      --pooling last --embd-normalize 2 --embedding -ngl 99
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  tagger-model:
+    image: ghcr.io/ggerganov/llama.cpp:server-cuda
+    restart: unless-stopped
+    volumes:
+      - ${MODELS_DIR:-/root/models}:/models:ro
+    command: >
+      --model /models/qwen3.5-4b-q4_k_m.gguf
+      --host 0.0.0.0 --port 8083
+      --ctx-size 16384 --n-gpu-layers 99 --flash-attn
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  backend:
+    build:
+      context: ./frontend
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    depends_on:
+      - chat-model
+      - embed-model
+    env_file:
+      - ./frontend/backend/.env
+    environment:
+      LLM_PROVIDER: openai
+      OPENAI_BASE_URL: http://chat-model:8081/v1
+      OPENAI_API_KEY: not-needed
+      OPENAI_MODEL: qwen3.5-9b
+      EMBED_BASE_URL: http://embed-model:8082/v1
+      FRONTEND_URL: http://frontend:3000
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    environment:
+      REMOTE_ACTION_URL: http://backend:8000/copilotkit
+      NODE_ENV: production
