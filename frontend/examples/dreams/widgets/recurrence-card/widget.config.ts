@@ -5,13 +5,8 @@ const config: WidgetConfig = {
   tool: {
     name: "show_recurrence_card",
     description:
-      "Show symbol recurrence statistics including frequency and cycle data. [Layout: third width, medium height]",
-    parameters: {
-      metrics: {
-        type: "array",
-        description: "Array of {label: string, value: string, note: string} recurrence metrics, e.g. [{label:'water',value:'16.2%',note:'Returns with night and house imagery.'}]",
-      },
-    },
+      "Show symbol recurrence statistics from user's dream history. Self-contained — widget fetches user profile data directly from /api/user-profile. Call with NO parameters. [Layout: third width, medium height]",
+    parameters: {},
   },
   agent: null,
   layout: { width: "third", height: "medium" },

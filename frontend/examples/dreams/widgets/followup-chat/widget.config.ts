@@ -5,10 +5,12 @@ const config: WidgetConfig = {
   tool: {
     name: "show_followup_chat",
     description:
-      "Show a follow-up chat panel for continuing dream conversation with prompt suggestions. [Layout: third width, tall height]",
+      "Show a follow-up chat panel with prompt suggestions grounded in retrieved chunks. " +
+      "Prompts should probe specific concepts found in the retrieved dream_knowledge and community_dreams results. [Layout: third width, tall height]",
     parameters: {
-      dream_title: { type: "string", description: "The dream title being discussed, e.g. 'Water under the old house'" },
-      prompts:     { type: "array",  description: "Array of suggested follow-up prompt strings, 2-4 items" },
+      dream_title:      { type: "string", description: "The dream title being discussed" },
+      prompts:          { type: "array",  description: "2-4 follow-up prompt strings that probe concepts from retrieved chunks" },
+      source_chunk_ids: { type: "array",  description: "IDs of retrieved chunks that inspired these prompts" },
     },
   },
   agent: null,

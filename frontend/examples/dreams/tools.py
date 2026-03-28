@@ -85,4 +85,82 @@ async def search_dreams(query: str, namespace: str = "community_dreams", top_k: 
 
 
 # Exported tool list — picked up by examples/__init__.py:load_all_backend_tools()
-all_tools = [record_dream, search_dreams]
+
+
+@tool
+async def get_symbol_graph(symbol: str, user_id: str = "default", top_k: int = 6) -> dict:
+    """Get symbols that co-occur with a given symbol from the dream corpus and user's graph.
+    Use this to populate DreamAtmosphere satellite symbols with real co-occurrence data.
+    Falls back gracefully to empty if no graph edges exist yet.
+
+    Args:
+        symbol:  The central symbol to find co-occurrences for, e.g. "water".
+        user_id: User identifier for personal dream graph (default: "default").
+        top_k:   Number of co-occurring symbols to return (default 6).
+    """
+    try:
+        from supabase import create_client
+        import os
+
+        supabase_url = os.getenv("SUPABASE_URL", "")
+        supabase_key = os.getenv("SUPABASE_SECRET_KEY") or os.getenv("SUPABASE_KEY", "")
+        if not supabase_url or not supabase_key:
+            return {"satellites": [], "source": "no_db"}
+
+        client = create_client(supabase_url, supabase_key)
+
+        # Find documents whose content mentions this symbol
+        symbol_docs = (
+            client.table("documents")
+            .select("id")
+            .ilike("content", f"%{symbol}%")
+            .limit(20)
+            .execute()
+        )
+        if not symbol_docs.data:
+            return {"satellites": [], "source": "no_docs_for_symbol"}
+
+        source_ids = [d["id"] for d in symbol_docs.data]
+
+        # Find co_occurs edges from these docs
+        edges = (
+            client.table("doc_relations")
+            .select("target_id, properties")
+            .in_("source_id", source_ids)
+            .eq("type", "co_occurs")
+            .order("properties->weight", desc=True)
+            .limit(top_k * 3)
+            .execute()
+        )
+        if not edges.data:
+            return {"satellites": [], "source": "no_edges_yet"}
+
+        # Get target document content to extract symbol names
+        target_ids = list({e["target_id"] for e in edges.data})[:top_k * 2]
+        targets = (
+            client.table("documents")
+            .select("id, content")
+            .in_("id", target_ids)
+            .execute()
+        )
+        # Extract first word/phrase as symbol label (content is usually short for symbol nodes)
+        satellites = []
+        seen = set()
+        for t in (targets.data or []):
+            label = t["content"].split()[0].capitalize() if t["content"] else "Symbol"
+            if label.lower() != symbol.lower() and label not in seen:
+                satellites.append(label)
+                seen.add(label)
+            if len(satellites) >= top_k:
+                break
+
+        logger.info(f"[get_symbol_graph] symbol={symbol} → {len(satellites)} satellites")
+        return {"symbol": symbol, "satellites": satellites, "source": "doc_relations"}
+
+    except Exception as e:
+        logger.error(f"[get_symbol_graph] error: {e}")
+        return {"satellites": [], "error": str(e)}
+
+
+# Updated tool list
+all_tools = [record_dream, search_dreams, get_symbol_graph]
