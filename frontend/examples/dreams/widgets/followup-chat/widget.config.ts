@@ -6,7 +6,10 @@ const config: WidgetConfig = {
     name: "show_followup_chat",
     description:
       "Show a follow-up chat panel for continuing dream conversation with prompt suggestions. [Layout: third width, tall height]",
-    parameters: {},
+    parameters: {
+      dream_title: { type: "string", description: "The dream title being discussed, e.g. 'Water under the old house'" },
+      prompts:     { type: "array",  description: "Array of suggested follow-up prompt strings, 2-4 items" },
+    },
   },
   agent: null,
   layout: { width: "third", height: "tall" },

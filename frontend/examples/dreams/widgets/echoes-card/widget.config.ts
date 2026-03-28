@@ -6,7 +6,12 @@ const config: WidgetConfig = {
     name: "show_echoes_card",
     description:
       "Show past dream echoes with date, title, and interpretive snippet. [Layout: third width, compact height]",
-    parameters: {},
+    parameters: {
+      echoes: {
+        type: "array",
+        description: "Array of {date: string, title: string, text: string} past dream echoes, up to 3 items",
+      },
+    },
   },
   agent: null,
   layout: { width: "third", height: "compact" },

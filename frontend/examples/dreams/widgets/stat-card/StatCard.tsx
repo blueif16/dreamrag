@@ -2,9 +2,14 @@ const FONTS = `
   @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&family=DM+Sans:wght@300;400;500&display=swap');
 `;
 
-export default function StatCard() {
-  const personal = 31;
-  const baseline = 12;
+interface Props {
+  label: string;
+  personal: number;
+  baseline: number;
+  description: string;
+}
+
+export default function StatCard({ label, personal, baseline, description }: Props) {
   const pct = Math.round(((personal - baseline) / baseline) * 100);
 
   return (
@@ -36,7 +41,7 @@ export default function StatCard() {
           color: "#5B6EAF",
           marginBottom: 8,
         }}>
-          Water Frequency
+          {label}
         </div>
 
         <div style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
@@ -58,7 +63,7 @@ export default function StatCard() {
             borderRadius: 99,
             marginLeft: 4,
           }}>
-            +{pct}% vs norm
+            {pct >= 0 ? "+" : ""}{pct}% vs norm
           </span>
         </div>
 
@@ -68,7 +73,7 @@ export default function StatCard() {
           marginTop: 4,
           lineHeight: 1.4,
         }}>
-          of your dreams feature water
+          {description}
         </div>
       </div>
 
@@ -85,19 +90,17 @@ export default function StatCard() {
           overflow: "hidden",
           position: "relative",
         }}>
-          {/* Baseline */}
           <div style={{
             position: "absolute",
             left: 0, top: 0, bottom: 0,
-            width: `${baseline}%`,
+            width: `${Math.min(baseline, 100)}%`,
             background: "rgba(196,137,156,0.35)",
             borderRadius: 99,
           }} />
-          {/* Personal */}
           <div style={{
             position: "absolute",
             left: 0, top: 0, bottom: 0,
-            width: `${personal}%`,
+            width: `${Math.min(personal, 100)}%`,
             background: "linear-gradient(90deg, #5B6EAF, #7B68C8)",
             borderRadius: 99,
             opacity: 0.85,

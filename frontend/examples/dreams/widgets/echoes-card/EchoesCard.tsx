@@ -1,17 +1,7 @@
-export default function EchoesCard() {
-  const echoes = [
-    {
-      date: "Mar 14",
-      title: "Flooded basement",
-      text: "More urgent, but water still marks a threshold.",
-    },
-    {
-      date: "Mar 08",
-      title: "Rain after the argument",
-      text: "Water returns again, but more as release than search.",
-    },
-  ];
+interface Echo { date: string; title: string; text: string }
+interface Props { echoes: Echo[] }
 
+export default function EchoesCard({ echoes }: Props) {
   return (
     <div
       style={{
@@ -22,8 +12,7 @@ export default function EchoesCard() {
         WebkitBackdropFilter: "blur(16px)",
         borderRadius: 20,
         border: "1px solid rgba(255,255,255,0.75)",
-        boxShadow:
-          "0 4px 24px rgba(91,110,175,0.08), 0 1px 0 rgba(255,255,255,0.8) inset",
+        boxShadow: "0 4px 24px rgba(91,110,175,0.08), 0 1px 0 rgba(255,255,255,0.8) inset",
         padding: "20px 22px",
         display: "flex",
         flexDirection: "column",
@@ -32,74 +21,25 @@ export default function EchoesCard() {
         overflow: "hidden",
       }}
     >
-      {/* Eyebrow */}
-      <div
-        style={{
-          fontSize: 10,
-          fontWeight: 500,
-          letterSpacing: "0.12em",
-          textTransform: "uppercase",
-          color: "#5B6EAF",
-        }}
-      >
+      <div style={{ fontSize: 10, fontWeight: 500, letterSpacing: "0.12em", textTransform: "uppercase", color: "#5B6EAF" }}>
         Echoes
       </div>
 
-      {/* Echo snippets */}
       {echoes.map((e) => (
-        <div
-          key={e.date}
-          style={{
-            background: "rgba(255,255,255,0.5)",
-            borderRadius: 12,
-            padding: "14px 16px",
-            border: "1px solid rgba(91,110,175,0.10)",
-          }}
-        >
-          <div
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: 8,
-              marginBottom: 6,
-            }}
-          >
-            <span
-              style={{
-                fontSize: 10,
-                color: "#C4899C",
-                fontWeight: 500,
-              }}
-            >
-              {e.date}
-            </span>
-            <span
-              style={{
-                fontSize: 10,
-                color: "#bbb",
-              }}
-            >
-              &middot;
-            </span>
-            <span
-              style={{
-                fontFamily: "'Playfair Display', Georgia, serif",
-                fontSize: 13,
-                fontWeight: 600,
-                color: "#1a1a2e",
-              }}
-            >
+        <div key={e.date} style={{
+          background: "rgba(255,255,255,0.5)",
+          borderRadius: 12,
+          padding: "14px 16px",
+          border: "1px solid rgba(91,110,175,0.10)",
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+            <span style={{ fontSize: 10, color: "#C4899C", fontWeight: 500 }}>{e.date}</span>
+            <span style={{ fontSize: 10, color: "#bbb" }}>&middot;</span>
+            <span style={{ fontFamily: "'Playfair Display', Georgia, serif", fontSize: 13, fontWeight: 600, color: "#1a1a2e" }}>
               {e.title}
             </span>
           </div>
-          <div
-            style={{
-              fontSize: 12,
-              lineHeight: 1.5,
-              color: "#7a7a8e",
-              fontWeight: 300,
-            }}
-          >
+          <div style={{ fontSize: 12, lineHeight: 1.5, color: "#7a7a8e", fontWeight: 300 }}>
             {e.text}
           </div>
         </div>

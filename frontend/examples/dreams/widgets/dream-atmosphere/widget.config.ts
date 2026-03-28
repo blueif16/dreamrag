@@ -6,7 +6,10 @@ const config: WidgetConfig = {
     name: "show_dream_atmosphere",
     description:
       "Show a symbol network visualization with floating particle effects for the dream atmosphere. [Layout: half width, tall height]",
-    parameters: {},
+    parameters: {
+      center_symbol: { type: "string", description: "The central dream symbol, e.g. 'Water'" },
+      satellites:    { type: "array",  description: "Array of satellite symbol label strings, e.g. ['Falling','House','Night']" },
+    },
   },
   agent: null,
   layout: { width: "half", height: "tall" },

@@ -6,7 +6,11 @@ const config: WidgetConfig = {
     name: "show_emotion_split",
     description:
       "Show two donut charts comparing emotion distribution for a specific dream symbol vs overall emotion distribution. [Layout: third width, medium height]",
-    parameters: {},
+    parameters: {
+      symbol:           { type: "string", description: "The symbol being compared, e.g. 'Water'" },
+      symbol_emotions:  { type: "array",  description: "Array of {label: string, value: number} emotions for this symbol" },
+      overall_emotions: { type: "array",  description: "Array of {label: string, value: number} emotions across all dreams" },
+    },
   },
   agent: null,
   layout: { width: "third", height: "medium" },

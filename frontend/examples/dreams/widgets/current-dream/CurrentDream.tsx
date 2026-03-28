@@ -1,17 +1,16 @@
-export default function CurrentDream() {
+interface Props {
+  title: string;
+  quote: string;
+  meaning: string;
+  subconscious_emotion: string;
+  life_echo: string;
+}
+
+export default function CurrentDream({ title, quote, meaning, subconscious_emotion, life_echo }: Props) {
   const panels = [
-    {
-      title: "Meaning",
-      text: "Water feels emotional, not threatening. The house pulls the dream toward memory.",
-    },
-    {
-      title: "Subconscious Emotion",
-      text: "Gentle anxiety: searching, not defensive.",
-    },
-    {
-      title: "Life Echo",
-      text: "It often appears when identity or safety is shifting.",
-    },
+    { title: "Meaning",              text: meaning },
+    { title: "Subconscious Emotion", text: subconscious_emotion },
+    { title: "Life Echo",            text: life_echo },
   ];
 
   return (
@@ -33,62 +32,43 @@ export default function CurrentDream() {
         overflow: "hidden",
       }}
     >
-      {/* Eyebrow */}
-      <div
-        style={{
-          fontSize: 10,
-          fontWeight: 500,
-          letterSpacing: "0.12em",
-          textTransform: "uppercase",
-          color: "#5B6EAF",
-          marginBottom: 8,
-        }}
-      >
+      <div style={{
+        fontSize: 10,
+        fontWeight: 500,
+        letterSpacing: "0.12em",
+        textTransform: "uppercase",
+        color: "#5B6EAF",
+        marginBottom: 8,
+      }}>
         Current Dream
       </div>
 
-      {/* Title */}
-      <div
-        style={{
-          fontFamily: "'Playfair Display', Georgia, serif",
-          fontSize: 22,
-          fontWeight: 700,
-          color: "#1a1a2e",
-          lineHeight: 1.25,
-          marginBottom: 16,
-        }}
-      >
-        Water under the old house.
+      <div style={{
+        fontFamily: "'Playfair Display', Georgia, serif",
+        fontSize: 22,
+        fontWeight: 700,
+        color: "#1a1a2e",
+        lineHeight: 1.25,
+        marginBottom: 16,
+      }}>
+        {title}
       </div>
 
-      {/* Dream quote block */}
-      <div
-        style={{
-          background: "rgba(238,234,255,0.35)",
-          borderRadius: 14,
-          padding: "16px 18px",
-          fontSize: 13,
-          lineHeight: 1.65,
-          color: "#4a4a5e",
-          fontWeight: 300,
-          marginBottom: 20,
-          borderLeft: "3px solid rgba(91,110,175,0.25)",
-        }}
-      >
-        Last night I dreamed I was walking through very deep water. Everything
-        around me was quiet. I kept looking for the house I lived in as a child.
-        I was not afraid. I only felt that I had to keep moving forward.
+      <div style={{
+        background: "rgba(238,234,255,0.35)",
+        borderRadius: 14,
+        padding: "16px 18px",
+        fontSize: 13,
+        lineHeight: 1.65,
+        color: "#4a4a5e",
+        fontWeight: 300,
+        marginBottom: 20,
+        borderLeft: "3px solid rgba(91,110,175,0.25)",
+      }}>
+        {quote}
       </div>
 
-      {/* Sub-panels row */}
-      <div
-        style={{
-          display: "flex",
-          gap: 12,
-          flex: 1,
-          minHeight: 0,
-        }}
-      >
+      <div style={{ display: "flex", gap: 12, flex: 1, minHeight: 0 }}>
         {panels.map((p) => (
           <div
             key={p.title}
@@ -102,24 +82,10 @@ export default function CurrentDream() {
               border: "1px solid rgba(255,255,255,0.7)",
             }}
           >
-            <div
-              style={{
-                fontSize: 11,
-                fontWeight: 500,
-                color: "#5B6EAF",
-                marginBottom: 6,
-              }}
-            >
+            <div style={{ fontSize: 11, fontWeight: 500, color: "#5B6EAF", marginBottom: 6 }}>
               {p.title}
             </div>
-            <div
-              style={{
-                fontSize: 12,
-                lineHeight: 1.55,
-                color: "#5a5a6e",
-                fontWeight: 300,
-              }}
-            >
+            <div style={{ fontSize: 12, lineHeight: 1.55, color: "#5a5a6e", fontWeight: 300 }}>
               {p.text}
             </div>
           </div>

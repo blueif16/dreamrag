@@ -6,7 +6,13 @@ const config: WidgetConfig = {
     name: "show_symbol_cooccurrence_network",
     description:
       "Show a force-directed symbol co-occurrence bubble network graph. Central symbol node with connected symbols sized by edge weight. [Layout: full width, tall height]",
-    parameters: {},
+    parameters: {
+      center_symbol: { type: "string", description: "The central symbol, e.g. 'Water'" },
+      nodes: {
+        type: "array",
+        description: "Array of {label: string, weight: number (0-1)} co-occurring symbols sorted by weight descending",
+      },
+    },
   },
   agent: null,
   layout: { width: "full", height: "tall" },
