@@ -71,10 +71,23 @@ Copied the scaffold's core machinery into `dreamrag/frontend/`:
 
 ## What's Next
 
-### Phase 3: Wire Up Real Data (Backend)
-- [ ] Set up Supabase (pgvector + BM25) with `001_rag_schema.sql`, `002_user_dreams.sql`
-- [ ] Implement `RAGStore` + `search_context_mesh()` for hybrid retrieval
-- [ ] Build ingestion pipeline: DreamBank, SDDb, Reddit, textbook chunks
+### Phase 3: Wire Up Real Data (Backend) — 2026-03-28
+
+**Completed:**
+- [x] Supabase migrations written: `001_rag_schema.sql` (documents + doc_relations + `search_context_mesh()` RRF+graph), `002_user_dreams.sql` (HNSW + GIN indexes, vector(1024))
+- [x] `RAGStore` implemented (`frontend/backend/app/core/rag_store.py`) — ingest/ingest_batch/search/add_relation, dedup by content hash, namespace isolation
+- [x] `QwenEmbeddings` wrapper (`app/core/qwen_embeddings.py`) — llama.cpp OpenAI-compat at `:8082`, instruction prefix, L2 norm
+- [x] `DataAdapter` + `StreamingAdapter` (`app/core/adapters.py`) — JSON/CSV/JSONL/text chunk parsers
+- [x] Supabase `.env` configured (URL + service role key)
+- [x] Ingest script (`frontend/backend/scripts/ingest.py`) — one command, auto-downloads all sources:
+  - `community_dreams`: DreamBank/DReAMy-lib (22K) + DreamBank Annotated (28K) + SDDb (44K) + Dryad (20K) = ~115K dreams
+  - `dream_knowledge`: Freud IoD + Jung PotU (Gutenberg) + HVdC manual (scraped from dreams.ucsc.edu)
+- [x] Runtime tools: `record_dream` + `search_dreams` auto-discovered by LangGraph orchestrator
+
+**Still needed before Phase 3 is fully live:**
+- [ ] Run SQL migrations in Supabase SQL editor
+- [ ] Set up llama.cpp embedding server locally (`Qwen3-Embedding-0.6B-Q8_0.gguf` on `:8082`)
+- [ ] Run `python scripts/ingest.py` to populate the DB
 - [ ] Build `doc_relations` graph edges (symbolizes, similar_to, co_occurs, follows)
 - [ ] Connect widgets to real data via LangGraph state (replace hardcoded demo data)
 
