@@ -17,14 +17,13 @@ Ingests all data sources into two Supabase namespaces:
 Usage (from frontend/backend/ with venv active):
     python scripts/ingest.py [--namespace community_dreams|dream_knowledge|all]
 
-    # Backfill metadata only (no re-embedding — fast, for already-ingested records):
-    python scripts/ingest.py --backfill-metadata
+Safe to re-run: new rows are embedded+inserted, existing rows get missing metadata patched (no re-embed).
 
 Requires llama.cpp embedding server running on :8082:
     llama-server --model ~/models/Qwen3-Embedding-0.6B-Q8_0.gguf \\
         --port 8082 --pooling last --embd-normalize 2 --embedding -ngl 99
 
-Files cache to /tmp/dreamrag_ingest/ — safe to re-run (duplicates skipped by content hash).
+Files cache to /tmp/dreamrag_ingest/
 After ingest, run: python scripts/build_corpus_stats.py
 """
 from __future__ import annotations
@@ -99,7 +98,7 @@ def ingest_dreambank_dreamy(rag: RAGStore) -> None:
     texts = [t.strip() for t in df[col].dropna().astype(str) if len(t.strip()) > 20]
     print(f"  {len(texts):,} dreams")
     r = rag.ingest_batch(texts, source="dreambank_dreamy", type="dream_narrative")
-    print(f"  → created={r['created']}, skipped={r['skipped']}")
+    print(f"  → created={r['created']}, skipped={r['skipped']}, patched={r['patched']}")
 
 
 def ingest_dreambank_annotated(rag: RAGStore) -> None:
@@ -144,7 +143,7 @@ def ingest_dreambank_annotated(rag: RAGStore) -> None:
 
     print(f"  {len(items):,} dreams (with emotion/character metadata)")
     r = rag.ingest_batch(items, source="dreambank_annotated", type="dream_narrative")
-    print(f"  → created={r['created']}, skipped={r['skipped']}")
+    print(f"  → created={r['created']}, skipped={r['skipped']}, patched={r['patched']}")
 
 
 def ingest_sddb(rag: RAGStore) -> None:
@@ -161,7 +160,7 @@ def ingest_sddb(rag: RAGStore) -> None:
     texts = [t.strip() for t in df[col].dropna().astype(str) if len(t.strip()) > 20]
     print(f"  {len(texts):,} dreams")
     r = rag.ingest_batch(texts, source="sddb", type="dream_narrative")
-    print(f"  → created={r['created']}, skipped={r['skipped']}")
+    print(f"  → created={r['created']}, skipped={r['skipped']}, patched={r['patched']}")
 
 
 def ingest_dryad(rag: RAGStore) -> None:
@@ -203,7 +202,7 @@ def ingest_dryad(rag: RAGStore) -> None:
 
     print(f"  {len(items):,} dreams (with HVdC metadata)")
     r = rag.ingest_batch(items, source="dryad_annotated", type="dream_narrative")
-    print(f"  → created={r['created']}, skipped={r['skipped']}")
+    print(f"  → created={r['created']}, skipped={r['skipped']}, patched={r['patched']}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -234,7 +233,7 @@ def ingest_gutenberg_text(rag: RAGStore, url: str, filename: str, source: str, t
     chunks = [c for c in chunks if len(c) > 100]
     print(f"  {len(chunks)} chunks from {title}")
     r = rag.ingest_batch(chunks, source=source, type="academic_chunk")
-    print(f"  → created={r['created']}, skipped={r['skipped']}")
+    print(f"  → created={r['created']}, skipped={r['skipped']}, patched={r['patched']}")
 
 
 def ingest_hvdc_manual(rag: RAGStore) -> None:
@@ -281,7 +280,7 @@ def ingest_hvdc_manual(rag: RAGStore) -> None:
 
     print(f"  {len(all_chunks)} chunks from HVdC manual")
     r = rag.ingest_batch(all_chunks, source="hvdc_manual", type="academic_chunk")
-    print(f"  → created={r['created']}, skipped={r['skipped']}")
+    print(f"  → created={r['created']}, skipped={r['skipped']}, patched={r['patched']}")
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -294,106 +293,6 @@ def check_embedding_server() -> bool:
     except Exception:
         return False
 
-
-def backfill_metadata() -> None:
-    """Patch metadata JSONB on already-ingested records without re-embedding.
-
-    Reads DreamBank Annotated CSV + Dryad TSV, matches by content_hash,
-    and UPDATE documents SET metadata = metadata || new_fields WHERE content_hash = X.
-    Safe to re-run — skips rows whose metadata already has the keys.
-    """
-    import pandas as pd
-    import hashlib
-    from supabase import create_client
-
-    url = os.getenv("SUPABASE_URL", "")
-    key = os.getenv("SUPABASE_SECRET_KEY") or os.getenv("SUPABASE_KEY", "")
-    client = create_client(url, key)
-
-    def _hash(text: str) -> str:
-        return hashlib.sha256(text.encode()).hexdigest()[:32]
-
-    def _patch_batch(updates: list[dict]) -> int:
-        patched = 0
-        for u in updates:
-            try:
-                client.table("documents").update(
-                    {"metadata": u["metadata"]}
-                ).eq("content_hash", u["hash"]).eq("namespace", "community_dreams").execute()
-                patched += 1
-            except Exception:
-                pass
-        return patched
-
-    total_patched = 0
-
-    # ── DreamBank Annotated ───────────────────────────────────────────────────
-    db_path = CACHE / "dreambank_annotated.csv"
-    if db_path.exists():
-        print("\n  Patching DreamBank Annotated metadata…")
-        import ast
-        df = pd.read_csv(db_path, low_memory=False)
-        col = _detect_text_col(df, ["report", "dreams", "text"])
-        updates = []
-        for _, row in df.iterrows():
-            text = str(row.get(col, "")).strip()
-            if len(text) < 20:
-                continue
-            meta: dict = {}
-            for field, key_name in [("emotion", "emotion_tags"), ("character", "character_tags")]:
-                raw = row.get(field, "")
-                if isinstance(raw, str) and raw.strip():
-                    try:
-                        tags = ast.literal_eval(raw)
-                        if isinstance(tags, list):
-                            meta[key_name] = [str(t).lower().strip() for t in tags if t]
-                    except Exception:
-                        pass
-            if meta:
-                updates.append({"hash": _hash(text), "metadata": meta})
-            if len(updates) >= 200:
-                total_patched += _patch_batch(updates)
-                updates = []
-                print(f"    …{total_patched} patched", end="\r")
-        total_patched += _patch_batch(updates)
-        print(f"  DreamBank Annotated: {total_patched} rows patched")
-    else:
-        print("  DreamBank Annotated CSV not in cache — run full ingest first")
-
-    # ── Dryad ─────────────────────────────────────────────────────────────────
-    dryad_path = CACHE / "dryad_dreams.tsv"
-    if dryad_path.exists():
-        print("\n  Patching Dryad HVdC metadata…")
-        df = pd.read_csv(dryad_path, sep="\t", low_memory=False)
-        col = _detect_text_col(df, ["report", "dream_text", "text", "content", "dream"])
-        skip_cols = {col, "id", "dreamer_id", "dream_id", "name", "series"}
-        hvdc_cols = [c for c in df.columns if c not in skip_cols and pd.api.types.is_numeric_dtype(df[c])]
-        updates = []
-        dryad_patched = 0
-        for _, row in df.iterrows():
-            text = str(row.get(col, "")).strip()
-            if len(text) < 20:
-                continue
-            meta: dict = {}
-            for hcol in hvdc_cols:
-                val = row.get(hcol)
-                if val is not None and str(val) not in ("nan", ""):
-                    try:
-                        meta[f"hvdc_{hcol}"] = float(val)
-                    except (ValueError, TypeError):
-                        pass
-            if meta:
-                updates.append({"hash": _hash(text), "metadata": meta})
-            if len(updates) >= 200:
-                dryad_patched += _patch_batch(updates)
-                updates = []
-                print(f"    …{dryad_patched} patched", end="\r")
-        dryad_patched += _patch_batch(updates)
-        print(f"  Dryad: {dryad_patched} rows patched")
-    else:
-        print("  Dryad TSV not in cache — run full ingest first")
-
-    print(f"\n  Backfill complete. Run build_corpus_stats.py next.")
 
 
 def run_community_dreams() -> None:
@@ -453,11 +352,6 @@ def main() -> None:
         default="all",
         help="Which namespace to ingest (default: all)",
     )
-    parser.add_argument(
-        "--backfill-metadata",
-        action="store_true",
-        help="Patch metadata on already-ingested records without re-embedding (fast)",
-    )
     args = parser.parse_args()
 
     print("\n=== DreamRAG Ingest ===\n")
@@ -465,12 +359,6 @@ def main() -> None:
     if not (os.getenv("SUPABASE_URL") and (os.getenv("SUPABASE_SECRET_KEY") or os.getenv("SUPABASE_KEY"))):
         print("ERROR: SUPABASE_URL / SUPABASE_KEY not set in backend/.env")
         sys.exit(1)
-
-    # Backfill mode — no embedding server needed
-    if args.backfill_metadata:
-        CACHE.mkdir(exist_ok=True)
-        backfill_metadata()
-        return
 
     if not check_embedding_server():
         print("ERROR: llama.cpp embedding server not reachable at http://localhost:8082")

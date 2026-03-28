@@ -127,9 +127,11 @@ class RAGStore:
         batch_size: int = 50,
     ) -> dict:
         """
-        Batch ingest. Items can be strings or dicts with "content"/"source"/"type" keys.
+        Batch ingest. Items can be strings or dicts with any metadata keys.
+        - New rows: embed + insert with full metadata.
+        - Existing rows: patch any metadata keys that are missing (no re-embed).
         """
-        created, skipped, ids = 0, 0, []
+        created, skipped, patched, ids = 0, 0, 0, []
 
         for i in range(0, len(items), batch_size):
             batch = items[i : i + batch_size]
@@ -137,29 +139,47 @@ class RAGStore:
             normalized = []
             for item in batch:
                 if isinstance(item, str):
-                    normalized.append({"content": item.strip()})
+                    normalized.append({"content": item.strip(), "source": source, "type": type})
                 else:
-                    normalized.append({
-                        "content": item.get("content", "").strip(),
-                        "source": item.get("source", source),
-                        "type": item.get("type", type),
-                    })
+                    d = {k: v for k, v in item.items()}
+                    d["content"] = d.get("content", "").strip()
+                    d.setdefault("source", source)
+                    d.setdefault("type", type)
+                    normalized.append(d)
 
             hashes = [self._hash(n["content"]) for n in normalized]
-            existing = (
+
+            # Fetch existing rows + their current metadata so we can patch gaps
+            existing_rows = (
                 self.client.table("documents")
-                .select("content_hash")
+                .select("content_hash, metadata")
                 .in_("content_hash", hashes)
                 .eq("namespace", self.namespace)
                 .execute()
             )
-            existing_hashes = {r["content_hash"] for r in existing.data}
+            existing_map: dict[str, dict] = {
+                r["content_hash"]: (r.get("metadata") or {})
+                for r in existing_rows.data
+            }
 
             new_items, new_hashes = [], []
             for n, h in zip(normalized, hashes):
-                if h in existing_hashes:
-                    skipped += 1
-                elif n["content"]:
+                if not n["content"]:
+                    continue
+                if h in existing_map:
+                    # Patch any metadata keys missing from the stored row
+                    extra = {
+                        k: v for k, v in n.items()
+                        if k != "content" and v is not None and k not in existing_map[h]
+                    }
+                    if extra:
+                        self.client.table("documents").update(
+                            {"metadata": {**existing_map[h], **extra}}
+                        ).eq("content_hash", h).eq("namespace", self.namespace).execute()
+                        patched += 1
+                    else:
+                        skipped += 1
+                else:
                     new_items.append(n)
                     new_hashes.append(h)
 
@@ -170,11 +190,7 @@ class RAGStore:
 
             records = []
             for n, emb, h in zip(new_items, embeddings, new_hashes):
-                metadata: dict = {}
-                if n.get("source"):
-                    metadata["source"] = n["source"]
-                if n.get("type"):
-                    metadata["type"] = n["type"]
+                metadata = {k: v for k, v in n.items() if k != "content" and v is not None}
                 records.append({
                     "content": n["content"],
                     "content_hash": h,
@@ -187,7 +203,7 @@ class RAGStore:
             created += len(result.data)
             ids.extend([r["id"] for r in result.data])
 
-        return {"created": created, "skipped": skipped, "ids": ids}
+        return {"created": created, "skipped": skipped, "patched": patched, "ids": ids}
 
     # =========================================================================
     # SEARCH
