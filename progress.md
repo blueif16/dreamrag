@@ -85,17 +85,46 @@ Copied the scaffold's core machinery into `dreamrag/frontend/`:
 - [x] Runtime tools: `record_dream` + `search_dreams` auto-discovered by LangGraph orchestrator
 
 **Still needed before Phase 3 is fully live:**
-- [ ] Run SQL migrations in Supabase SQL editor
+- [ ] Run SQL migrations in Supabase SQL editor (001, 002, 003)
 - [ ] Set up llama.cpp embedding server locally (`Qwen3-Embedding-0.6B-Q8_0.gguf` on `:8082`)
 - [ ] Run `python scripts/ingest.py` to populate the DB
+- [ ] Run `python scripts/ingest.py --backfill-metadata` to patch metadata on already-ingested 22K records (no re-embed)
+- [ ] Run `python scripts/build_corpus_stats.py` to populate `corpus_stats` from annotated metadata
 - [ ] Build `doc_relations` graph edges (symbolizes, similar_to, co_occurs, follows)
-- [ ] Connect widgets to real data via LangGraph state (replace hardcoded demo data)
+
+### Phase 3.5: Widget ↔ RAG Grounding — 2026-03-28
+
+**Completed:**
+- [x] Widget data architecture designed: 18 widgets split into agent-populated vs self-contained
+  - **Agent-populated** (LLM synthesizes from retrieved chunks, passes props + source_chunk_ids):
+    CurrentDream, DreamAtmosphere, FollowupChat, EchoesCard, InterpretationSynthesis, TextbookCard, CommunityMirror
+  - **Self-contained** (widget fetches user SQL stats itself, agent calls with no params):
+    EmotionalClimate, RecurrenceCard
+- [x] All agent-populated widget configs updated with `source_chunk_ids` parameter — agent must pass chunk IDs that backed each widget's content
+- [x] Orchestrator prompt rewritten with explicit retrieval protocol:
+  - NEW DREAM: `record_dream` + 3× `search_dreams` (dream_knowledge, community_dreams, user_*_dreams) BEFORE any widget spawn
+  - SYMBOL query: `search_dreams`×2 + `get_symbol_graph` BEFORE spawning
+  - Each widget content field mapped to the specific namespace that backs it (e.g. `meaning` ← dream_knowledge, `life_echo` ← community_dreams)
+- [x] `EmotionalClimate` + `RecurrenceCard` converted to self-contained: fetch `/api/user-profile` on mount, show loading state + graceful empty fallback
+- [x] `/api/user-profile` Next.js route — aggregates emotion_tags, symbol_tags, streak, last7, lucidity_avg from `user_dreams`
+- [x] New tool: `get_symbol_graph` — queries `doc_relations` co_occurs edges for DreamAtmosphere satellites; gracefully returns empty until graph is built
+- [x] Ingest pipeline upgraded:
+  - DreamBank Annotated: stores `emotion_tags` + `character_tags` in metadata JSONB
+  - Dryad: stores all HVdC numeric scores as `hvdc_*` keys in metadata JSONB
+  - `--backfill-metadata` flag: patches already-ingested records without re-embedding
+- [x] `003_corpus_stats.sql` migration: `corpus_stats` table + `get_corpus_stat()` function
+- [x] `scripts/build_corpus_stats.py`: aggregates emotion/symbol/HVdC frequencies from `documents.metadata` → upserts into `corpus_stats` for StatCard population baselines
+- [x] SourcesPanel removed from composition rules — replaced by per-widget `source_chunk_ids` prop
+
+**Decision log:**
+- Self-contained widgets fetch own data so agent doesn't need to query user SQL — keeps agent tool calls to ≤4 per dashboard
+- `source_chunk_ids` on each widget (not a separate SourcesPanel) — provenance is per-card, traceable to exact retrieval results
+- Metadata backfill instead of re-ingest — 22K already-ingested dreams get emotion/HVdC metadata via content_hash UPDATE, no re-embedding
 
 ### Phase 4: Make Widgets Smart
-- [ ] Convert widgets from dumb (hardcoded) to data-driven (receive props from LLM)
-- [ ] Add `source_chunks` and `chunk_registry` to widget props for provenance
-- [ ] Implement SourceDrawer component (click "N sources" to see chunk details)
-- [ ] Wire follow-up chat as a smart widget with dream-scoped conversation
+- [ ] Implement SourceDrawer: "N sources" disclosure on each card → shows chunk content, source DB, score, graph hop depth
+- [ ] Wire FollowupChat as a smart subagent widget with dream-scoped conversation
+- [ ] Auto-tagger pipeline (qwen3.5-4b on :8083) — annotates `emotion_tags`, `symbol_tags`, `lucidity_score` on `record_dream`
 
 ### Phase 5: Local Inference (GCP Deployment)
 - [ ] Set up llama.cpp servers on GCP L4: qwen3.5-9b (:8081), qwen3-embed (:8082), qwen3.5-4b (:8083)
