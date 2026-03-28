@@ -6,6 +6,40 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 A full-stack AI agent platform: CopilotKit frontend (Next.js 15 + React 19) talks to a LangGraph orchestrator (FastAPI) via AG-UI protocol. The LLM spawns UI widgets onto a canvas through tool calls. Widgets are either **smart** (have a subagent that takes over chat) or **dumb** (display-only, rendered on the client).
 
+## Data Ingest (one-time setup)
+
+**Step 1 — Install llama.cpp and download the embedding model**
+```bash
+brew install llama.cpp
+huggingface-cli download Qwen/Qwen3-Embedding-0.6B-GGUF Qwen3-Embedding-0.6B-Q8_0.gguf --local-dir ~/models
+```
+
+**Step 2 — Start the embedding server** (keep this terminal open)
+```bash
+llama-server --model ~/models/Qwen3-Embedding-0.6B-Q8_0.gguf \
+  --port 8082 --pooling last --embd-normalize 2 --embedding -ngl 99
+```
+
+**Step 3 — Run the ingest script** (new terminal, from `frontend/backend/`)
+```bash
+cd backend
+source .venv/bin/activate
+uv sync
+python scripts/ingest.py
+```
+
+Run only one namespace if needed:
+```bash
+python scripts/ingest.py --namespace community_dreams
+python scripts/ingest.py --namespace dream_knowledge
+```
+
+Also run the SQL migrations in Supabase SQL editor before step 3:
+- `supabase/migrations/001_rag_schema.sql`
+- `supabase/migrations/002_user_dreams.sql`
+
+---
+
 ## Commands
 
 ```bash
