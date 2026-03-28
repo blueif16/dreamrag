@@ -51,29 +51,49 @@ huggingface-cli download Qwen/Qwen3-Embedding-0.6B-GGUF Qwen3-Embedding-0.6B-Q8_
 # Extract to C:\llama.cpp\
 ```
 
-**Step 2 — Start embedding server on Windows (PowerShell, keep open)**
+**Step 2 — Start model servers on Windows (PowerShell)**
+
+WSL2 shares localhost with Windows by default — use `localhost` from WSL, no IP tricks needed.
+
 ```powershell
-C:\llama.cpp\llama-server.exe --model C:\models\Qwen3-Embedding-0.6B-Q8_0.gguf `
-  --host 0.0.0.0 --port 8082 --pooling last --embd-normalize 2 --embedding -ngl 99
+# Embedding model — :8082 (run during ingest AND serving)
+.\llama-server.exe `
+  --model C:\models\Qwen3-Embedding-0.6B-Q8_0.gguf `
+  --host 0.0.0.0 --port 8082 `
+  --pooling last `
+  --embedding -ngl 99
+
+# Chat model — :8081 (run for the main app)
+.\llama-server.exe `
+  --model C:\models\qwen3.5-9b-q4_k_m.gguf `
+  --host 0.0.0.0 --port 8081 `
+  --ctx-size 32768 `
+  --n-gpu-layers 99 `
+  --flash-attn `
+  --cont-batching
+
+# Auto-tagger — :8083 (optional, for HVdC annotation pipeline)
+.\llama-server.exe `
+  --model C:\models\qwen3.5-4b-q4_k_m.gguf `
+  --host 0.0.0.0 --port 8083 `
+  --ctx-size 16384 `
+  --n-gpu-layers 99 `
+  --flash-attn
 ```
-`--host 0.0.0.0` is required so WSL can reach it.
 
-**Step 3 — Run ingest from WSL** (ingest script unchanged)
+Model downloads (run once in PS):
+```powershell
+huggingface-cli download Qwen/Qwen3-Embedding-0.6B-GGUF Qwen3-Embedding-0.6B-Q8_0.gguf --local-dir C:\models
+huggingface-cli download Qwen/Qwen3.5-9B-GGUF qwen3.5-9b-q4_k_m.gguf --local-dir C:\models
+huggingface-cli download Qwen/Qwen3.5-4B-GGUF qwen3.5-4b-q4_k_m.gguf --local-dir C:\models
+```
+
+**Step 3 — Run ingest from WSL** (localhost works, no changes to script)
 ```bash
-# Get Windows host IP (WSL2 nameserver = Windows host)
-WINDOWS_IP=$(cat /etc/resolv.conf | grep nameserver | awk '{print $2}')
-
 cd /path/to/dreamrag/frontend/backend
 source .venv/bin/activate
 uv sync
-
-# Override EMBED_BASE_URL to point at Windows llama.cpp
-EMBED_BASE_URL=http://$WINDOWS_IP:8082/v1 python scripts/ingest.py
-```
-
-Or set it permanently in `backend/.env`:
-```bash
-EMBED_BASE_URL=http://<paste-windows-ip>:8082/v1  # get IP from: cat /etc/resolv.conf
+python scripts/ingest.py
 ```
 
 ---
