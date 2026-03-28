@@ -34,6 +34,50 @@ python scripts/ingest.py --namespace community_dreams
 python scripts/ingest.py --namespace dream_knowledge
 ```
 
+---
+
+## Data Ingest — Windows (llama.cpp on PowerShell) + WSL (ingest script)
+
+**Step 1 — Install llama.cpp on Windows (PowerShell)**
+```powershell
+winget install Git.Git
+winget install Python.Python.3
+pip install huggingface_hub[cli]
+huggingface-cli download Qwen/Qwen3-Embedding-0.6B-GGUF Qwen3-Embedding-0.6B-Q8_0.gguf --local-dir C:\models
+
+# Download llama.cpp release binary (no build needed)
+# Go to: https://github.com/ggerganov/llama.cpp/releases/latest
+# Download: llama-<version>-bin-win-cuda-cu12.4-x64.zip (CUDA) or llama-<version>-bin-win-noavx-x64.zip (CPU)
+# Extract to C:\llama.cpp\
+```
+
+**Step 2 — Start embedding server on Windows (PowerShell, keep open)**
+```powershell
+C:\llama.cpp\llama-server.exe --model C:\models\Qwen3-Embedding-0.6B-Q8_0.gguf `
+  --host 0.0.0.0 --port 8082 --pooling last --embd-normalize 2 --embedding -ngl 99
+```
+`--host 0.0.0.0` is required so WSL can reach it.
+
+**Step 3 — Run ingest from WSL** (ingest script unchanged)
+```bash
+# Get Windows host IP (WSL2 nameserver = Windows host)
+WINDOWS_IP=$(cat /etc/resolv.conf | grep nameserver | awk '{print $2}')
+
+cd /path/to/dreamrag/frontend/backend
+source .venv/bin/activate
+uv sync
+
+# Override EMBED_BASE_URL to point at Windows llama.cpp
+EMBED_BASE_URL=http://$WINDOWS_IP:8082/v1 python scripts/ingest.py
+```
+
+Or set it permanently in `backend/.env`:
+```bash
+EMBED_BASE_URL=http://<paste-windows-ip>:8082/v1  # get IP from: cat /etc/resolv.conf
+```
+
+---
+
 Also run the SQL migrations in Supabase SQL editor before step 3:
 - `supabase/migrations/001_rag_schema.sql`
 - `supabase/migrations/002_user_dreams.sql`
