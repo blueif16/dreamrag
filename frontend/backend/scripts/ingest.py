@@ -15,9 +15,10 @@ Ingests all data sources into two Supabase namespaces:
     - Hall/Van de Castle Coding Manual  dreams.ucsc.edu scraped HTML
 
 Usage (from frontend/backend/ with venv active):
-    python scripts/ingest.py [--namespace community_dreams|dream_knowledge|all]
+    python scripts/ingest.py
 
-Safe to re-run: new rows are embedded+inserted, existing rows get missing metadata patched (no re-embed).
+Safe to re-run: each source checks the DB first and skips if already present.
+New sources are embedded+inserted. Existing rows get missing metadata patched (no re-embed).
 
 Requires llama.cpp embedding server running on :8082:
     llama-server --model ~/models/Qwen3-Embedding-0.6B-Q8_0.gguf \\
@@ -29,7 +30,6 @@ After ingest, run: python scripts/build_corpus_stats.py
 from __future__ import annotations
 import sys
 import os
-import argparse
 import time
 from pathlib import Path
 
@@ -47,6 +47,20 @@ from app.core.adapters import DataAdapter
 
 CACHE = Path(__file__).parent.parent / "data"
 UA = {"User-Agent": "Mozilla/5.0"}  # Gutenberg blocks default requests UA
+
+
+# ─── DB helpers ──────────────────────────────────────────────────────────────
+
+def _source_count(rag: RAGStore, source: str) -> int:
+    """Count documents already ingested for this source in the namespace."""
+    result = (
+        rag.client.table("documents")
+        .select("id", count="exact")
+        .eq("namespace", rag.namespace)
+        .eq("metadata->>source", source)
+        .execute()
+    )
+    return result.count or 0
 
 
 # ─── Download helper ─────────────────────────────────────────────────────────
@@ -84,6 +98,9 @@ def _detect_text_col(df, candidates: list[str]) -> str | None:
 
 def ingest_dreambank_dreamy(rag: RAGStore) -> None:
     """DReAMy-lib/DreamBank-dreams-en — 22,400 records, field: 'dreams'"""
+    if _source_count(rag, "dreambank_dreamy") > 0:
+        print("  already ingested, skipping")
+        return
     import pandas as pd
     url = (
         "https://huggingface.co/datasets/DReAMy-lib/DreamBank-dreams-en"
@@ -105,6 +122,9 @@ def ingest_dreambank_annotated(rag: RAGStore) -> None:
     """gustavecortal/DreamBank-annotated — 28,000 records (CC-BY-NC-4.0).
     Columns: id, name, number, time, date, gender, age, report, character, emotion
     """
+    if _source_count(rag, "dreambank_annotated") > 0:
+        print("  already ingested, skipping")
+        return
     import ast
     import pandas as pd
     url = "https://huggingface.co/datasets/gustavecortal/DreamBank-annotated/resolve/main/train.csv"
@@ -161,6 +181,9 @@ def ingest_dreambank_annotated(rag: RAGStore) -> None:
 
 def ingest_sddb(rag: RAGStore) -> None:
     """SDDb — 44,556 records from Zenodo"""
+    if _source_count(rag, "sddb") > 0:
+        print("  already ingested, skipping")
+        return
     import pandas as pd
     url = "https://zenodo.org/records/11662064/files/dream-export.csv?download=1"
     path = download(url, CACHE / "sddb.csv", "SDDb/Zenodo (~34 MB)")
@@ -176,13 +199,16 @@ def ingest_sddb(rag: RAGStore) -> None:
     print(f"  → created={r['created']}, skipped={r['skipped']}, patched={r['patched']}")
 
 
-def ingest_dryad(rag: RAGStore) -> None:
+def ingest_dryad(rag: RAGStore) -> None:  # noqa: C901
     """Dryad HVdC annotated dataset — 20K+ records, TSV.
     Columns: dream_id, dreamer, description, dream_date, dream_language, text_dream,
              characters_code, emotions_code, aggression_code, friendliness_code, sexuality_code,
              Male, Animal, Friends, Family, Dead&Imaginary,
              Aggression/Friendliness, A/CIndex, F/CIndex, S/CIndex, NegativeEmotions
     """
+    if _source_count(rag, "dryad_annotated") > 0:
+        print("  already ingested, skipping")
+        return
     import pandas as pd
     url = "https://datadryad.org/downloads/file_stream/401197"
     path = download(url, CACHE / "dryad_dreams.tsv", "Dryad Annotated (~26 MB)")
@@ -241,6 +267,9 @@ def ingest_dryad(rag: RAGStore) -> None:
 
 def ingest_gutenberg_text(rag: RAGStore, url: str, filename: str, source: str, title: str) -> None:
     """Download a Gutenberg plain-text file, strip header/footer, chunk, and ingest."""
+    if _source_count(rag, source) > 0:
+        print("  already ingested, skipping")
+        return
     path = download(url, CACHE / filename, f"{title} (Gutenberg)")
     raw = path.read_text(encoding="utf-8", errors="replace")
 
@@ -268,6 +297,9 @@ def ingest_gutenberg_text(rag: RAGStore, url: str, filename: str, source: str, t
 
 def ingest_hvdc_manual(rag: RAGStore) -> None:
     """Scrape Hall/Van de Castle coding manual from dreams.ucsc.edu/Coding/"""
+    if _source_count(rag, "hvdc_manual") > 0:
+        print("  already ingested, skipping")
+        return
     from bs4 import BeautifulSoup
 
     base = "https://dreams.ucsc.edu"
@@ -377,15 +409,6 @@ def run_dream_knowledge() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="DreamRAG ingest")
-    parser.add_argument(
-        "--namespace",
-        choices=["community_dreams", "dream_knowledge", "all"],
-        default="all",
-        help="Which namespace to ingest (default: all)",
-    )
-    args = parser.parse_args()
-
     print("\n=== DreamRAG Ingest ===\n")
 
     if not (os.getenv("SUPABASE_URL") and (os.getenv("SUPABASE_SECRET_KEY") or os.getenv("SUPABASE_KEY"))):
@@ -400,13 +423,9 @@ def main() -> None:
         sys.exit(1)
 
     CACHE.mkdir(exist_ok=True)
-    print(f"Cache: {CACHE}\n")
 
-    if args.namespace in ("community_dreams", "all"):
-        run_community_dreams()
-
-    if args.namespace in ("dream_knowledge", "all"):
-        run_dream_knowledge()
+    run_community_dreams()
+    run_dream_knowledge()
 
     print("\n=== Done ===")
 
