@@ -45,7 +45,7 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 from app.core.rag_store import RAGStore
 from app.core.adapters import DataAdapter
 
-CACHE = Path("/tmp/dreamrag_ingest")
+CACHE = Path(__file__).parent.parent / "data"
 UA = {"User-Agent": "Mozilla/5.0"}  # Gutenberg blocks default requests UA
 
 
@@ -103,45 +103,58 @@ def ingest_dreambank_dreamy(rag: RAGStore) -> None:
 
 def ingest_dreambank_annotated(rag: RAGStore) -> None:
     """gustavecortal/DreamBank-annotated — 28,000 records (CC-BY-NC-4.0).
-    Stores emotion + character annotations in metadata JSONB.
+    Columns: id, name, number, time, date, gender, age, report, character, emotion
     """
+    import ast
     import pandas as pd
     url = "https://huggingface.co/datasets/gustavecortal/DreamBank-annotated/resolve/main/train.csv"
     path = download(url, CACHE / "dreambank_annotated.csv", "DreamBank Annotated (~27 MB)")
     df = pd.read_csv(path, low_memory=False)
-    col = _detect_text_col(df, ["report", "dreams", "text"])
-    if not col:
-        print(f"  WARN: could not detect text column. Columns: {list(df.columns)}")
-        return
 
     items = []
     for _, row in df.iterrows():
-        text = str(row.get(col, "")).strip()
+        text = str(row.get("report", "")).strip()
         if len(text) < 20:
             continue
         meta: dict = {"source": "dreambank_annotated", "type": "dream_narrative"}
-        # emotion column is a string representation of a list, e.g. "['anger', 'joy']"
+
+        # Identity / demographic fields
+        for src_col, meta_key in [
+            ("id",     "dreamer_id"),
+            ("name",   "dreamer_series"),
+            ("number", "dream_number"),
+            ("time",   "dream_period"),
+            ("date",   "dreamer_birth_year"),
+            ("gender", "gender"),
+            ("age",    "age_group"),
+        ]:
+            val = row.get(src_col)
+            if val is not None and str(val) not in ("nan", ""):
+                meta[meta_key] = str(val).strip()
+
+        # emotion column is a string repr of a list, e.g. "['anger', 'joy']"
         raw_emotion = row.get("emotion", "")
         if isinstance(raw_emotion, str) and raw_emotion.strip():
-            import ast
             try:
                 tags = ast.literal_eval(raw_emotion)
                 if isinstance(tags, list):
                     meta["emotion_tags"] = [str(t).lower().strip() for t in tags if t]
             except Exception:
                 pass
+
+        # character column same format
         raw_char = row.get("character", "")
         if isinstance(raw_char, str) and raw_char.strip():
-            import ast
             try:
                 tags = ast.literal_eval(raw_char)
                 if isinstance(tags, list):
                     meta["character_tags"] = [str(t).lower().strip() for t in tags if t]
             except Exception:
                 pass
+
         items.append({"content": text, **meta})
 
-    print(f"  {len(items):,} dreams (with emotion/character metadata)")
+    print(f"  {len(items):,} dreams")
     r = rag.ingest_batch(items, source="dreambank_annotated", type="dream_narrative")
     print(f"  → created={r['created']}, skipped={r['skipped']}, patched={r['patched']}")
 
@@ -165,42 +178,59 @@ def ingest_sddb(rag: RAGStore) -> None:
 
 def ingest_dryad(rag: RAGStore) -> None:
     """Dryad HVdC annotated dataset — 20K+ records, TSV.
-    Stores all numeric HVdC scores in metadata JSONB under 'hvdc_*' keys.
+    Columns: dream_id, dreamer, description, dream_date, dream_language, text_dream,
+             characters_code, emotions_code, aggression_code, friendliness_code, sexuality_code,
+             Male, Animal, Friends, Family, Dead&Imaginary,
+             Aggression/Friendliness, A/CIndex, F/CIndex, S/CIndex, NegativeEmotions
     """
     import pandas as pd
     url = "https://datadryad.org/downloads/file_stream/401197"
     path = download(url, CACHE / "dryad_dreams.tsv", "Dryad Annotated (~26 MB)")
     df = pd.read_csv(path, sep="\t", low_memory=False)
-    col = _detect_text_col(df, ["report", "dream_text", "text", "content", "dream"])
-    if not col:
-        print(f"  WARN: could not detect text column. Columns: {list(df.columns)}")
-        return
-    print(f"  Using column: '{col}'")
 
-    # Identify HVdC numeric columns (everything that's not the text column or id-like)
-    skip_cols = {col, "id", "dreamer_id", "dream_id", "name", "series"}
-    hvdc_cols = [
-        c for c in df.columns
-        if c not in skip_cols and pd.api.types.is_numeric_dtype(df[c])
+    TEXT_COL = "text_dream"
+    # Identity / descriptor string columns to store directly
+    STR_COLS = {
+        "dream_id":          "dream_id",
+        "dreamer":           "dreamer_id",
+        "description":       "dreamer_description",
+        "dream_date":        "dream_date",
+        "dream_language":    "language",
+        "characters_code":   "hvdc_characters_code",
+        "emotions_code":     "hvdc_emotions_code",
+        "aggression_code":   "hvdc_aggression_code",
+        "friendliness_code": "hvdc_friendliness_code",
+        "sexuality_code":    "hvdc_sexuality_code",
+    }
+    # Numeric HVdC metric columns
+    NUMERIC_COLS = [
+        "Male", "Animal", "Friends", "Family", "Dead&Imaginary",
+        "Aggression/Friendliness", "A/CIndex", "F/CIndex", "S/CIndex", "NegativeEmotions",
     ]
-    print(f"  HVdC numeric columns: {hvdc_cols[:10]}{'…' if len(hvdc_cols) > 10 else ''}")
 
     items = []
     for _, row in df.iterrows():
-        text = str(row.get(col, "")).strip()
+        text = str(row.get(TEXT_COL, "")).strip()
         if len(text) < 20:
             continue
         meta: dict = {"source": "dryad_annotated", "type": "dream_narrative"}
-        for hcol in hvdc_cols:
-            val = row.get(hcol)
+
+        for src_col, meta_key in STR_COLS.items():
+            val = row.get(src_col)
+            if val is not None and str(val) not in ("nan", ""):
+                meta[meta_key] = str(val).strip()
+
+        for ncol in NUMERIC_COLS:
+            val = row.get(ncol)
             if val is not None and str(val) not in ("nan", ""):
                 try:
-                    meta[f"hvdc_{hcol}"] = float(val)
+                    meta[f"hvdc_{ncol}"] = float(val)
                 except (ValueError, TypeError):
                     pass
+
         items.append({"content": text, **meta})
 
-    print(f"  {len(items):,} dreams (with HVdC metadata)")
+    print(f"  {len(items):,} dreams")
     r = rag.ingest_batch(items, source="dryad_annotated", type="dream_narrative")
     print(f"  → created={r['created']}, skipped={r['skipped']}, patched={r['patched']}")
 
@@ -299,16 +329,18 @@ def run_community_dreams() -> None:
     print("\n── community_dreams ────────────────────────────────────────")
     rag = RAGStore(namespace="community_dreams")
 
-    print("\n[1/4] DreamBank (DReAMy-lib)")
-    ingest_dreambank_dreamy(rag)
+    # [disabled] dreambank_dreamy — bare text only, no annotations
+    # print("\n[1/4] DreamBank (DReAMy-lib)")
+    # ingest_dreambank_dreamy(rag)
 
-    print("\n[2/4] DreamBank Annotated")
+    print("\n[1/2] DreamBank Annotated")
     ingest_dreambank_annotated(rag)
 
-    print("\n[3/4] SDDb")
-    ingest_sddb(rag)
+    # [disabled] sddb — bare text only, no annotations
+    # print("\n[3/4] SDDb")
+    # ingest_sddb(rag)
 
-    print("\n[4/4] Dryad Annotated")
+    print("\n[2/2] Dryad Annotated")
     ingest_dryad(rag)
 
     s = rag.stats()
