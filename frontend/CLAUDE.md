@@ -262,3 +262,5 @@ Detailed write-ups of past bugs and design decisions live in `docs/`:
 - [`docs/bug-canvas-clear.md`](docs/bug-canvas-clear.md) -- why clear_canvas is a backend tool, not frontend
 - [`docs/thinking-token-rendering.md`](docs/thinking-token-rendering.md) -- inline `<think>` token parsing, what was avoided and why
 - [`docs/widget-protocol.md`](docs/widget-protocol.md) -- smart vs dumb widget lifecycle, canvas operations, 1-turn delay
+- [`docs/3d_particle_morph_practices.md`](docs/3d_particle_morph_practices.md) -- 3D particle morph system: GLB pipeline, shader setup, blending/Bloom gotchas, scroll-driven morph architecture
+- [`docs/3d_shape_morph.md`](docs/3d_shape_morph.md) -- full runbook for the particle morph landing page (step-by-step execution guide)
