@@ -13,6 +13,7 @@ Namespaces used in DreamRAG:
 """
 from __future__ import annotations
 import os
+import time
 import hashlib
 from dataclasses import dataclass, field
 
@@ -124,7 +125,7 @@ class RAGStore:
         items: list[str | dict],
         source: str | None = None,
         type: str | None = None,
-        batch_size: int = 50,
+        batch_size: int = 10,
     ) -> dict:
         """
         Batch ingest. Items can be strings or dicts with any metadata keys.
@@ -199,9 +200,17 @@ class RAGStore:
                     "namespace": self.namespace,
                 })
 
-            result = self.client.table("documents").insert(records).execute()
-            created += len(result.data)
-            ids.extend([r["id"] for r in result.data])
+            for attempt in range(3):
+                try:
+                    result = self.client.table("documents").insert(records).execute()
+                    created += len(result.data)
+                    ids.extend([r["id"] for r in result.data])
+                    break
+                except Exception as e:
+                    if attempt < 2 and "timeout" in str(e).lower():
+                        time.sleep(2 ** attempt)
+                        continue
+                    raise
 
         return {"created": created, "skipped": skipped, "patched": patched, "ids": ids}
 

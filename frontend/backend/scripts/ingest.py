@@ -63,6 +63,18 @@ def _source_count(rag: RAGStore, source: str) -> int:
     return result.count or 0
 
 
+def _source_done(rag: RAGStore, source: str, expected: int, tolerance: float = 0.95) -> bool:
+    """Check if source is fully ingested (within tolerance). Allows partial resumes."""
+    count = _source_count(rag, source)
+    if count == 0:
+        return False
+    if count >= expected * tolerance:
+        print(f"  already ingested ({count:,}/{expected:,}), skipping")
+        return True
+    print(f"  partial ingestion detected ({count:,}/{expected:,}), resuming...")
+    return False
+
+
 # ─── Download helper ─────────────────────────────────────────────────────────
 
 def download(url: str, dest: Path, desc: str) -> Path:
@@ -98,8 +110,7 @@ def _detect_text_col(df, candidates: list[str]) -> str | None:
 
 def ingest_dreambank_dreamy(rag: RAGStore) -> None:
     """DReAMy-lib/DreamBank-dreams-en — 22,400 records, field: 'dreams'"""
-    if _source_count(rag, "dreambank_dreamy") > 0:
-        print("  already ingested, skipping")
+    if _source_done(rag, "dreambank_dreamy", expected=22000):
         return
     import pandas as pd
     url = (
@@ -118,14 +129,63 @@ def ingest_dreambank_dreamy(rag: RAGStore) -> None:
     print(f"  → created={r['created']}, skipped={r['skipped']}, patched={r['patched']}")
 
 
+_HVDC_EMOTION_MAP = {
+    "AN": "anger",
+    "AP": "apprehension",
+    "SD": "sadness",
+    "CO": "confusion",
+    "HA": "happiness",
+}
+
+_HVDC_CHAR_PREFIX = {
+    "M": "male", "F": "female", "J": "joint_group", "I": "indefinite",
+}
+_HVDC_CHAR_RELATION = {
+    "K": "known", "S": "stranger", "O": "occupational",
+}
+_HVDC_CHAR_AGE = {
+    "A": "adult", "C": "child", "T": "teenager", "B": "baby",
+}
+
+
+def _parse_hvdc_emotions(raw: str) -> list[str]:
+    """Parse HVdC emotion codes like 'CO D, AN 1MKA' → ['confusion', 'anger']"""
+    import re
+    codes = re.findall(r'\b([A-Z]{2})\b', raw)
+    tags = []
+    for c in codes:
+        if c in _HVDC_EMOTION_MAP:
+            tags.append(_HVDC_EMOTION_MAP[c])
+    return list(dict.fromkeys(tags))  # dedupe, preserve order
+
+
+def _parse_hvdc_characters(raw: str) -> list[str]:
+    """Parse HVdC character codes like '1MSA, 1FKA, 2JSA' → ['male_stranger', 'female_known', 'joint_group_stranger']
+    Also detect 'ANI' as 'animal'."""
+    import re
+    tags = []
+    for token in re.split(r'[,\s]+', raw):
+        token = token.strip()
+        if not token:
+            continue
+        if "ANI" in token.upper():
+            tags.append("animal")
+            continue
+        # Pattern: optional count + gender + relation + age, e.g. 1MSA, 2FKC
+        m = re.match(r'\d*([MFJI])([KSO])([ACTB])', token)
+        if m:
+            g, r, _a = m.group(1), m.group(2), m.group(3)
+            label = _HVDC_CHAR_PREFIX.get(g, g) + "_" + _HVDC_CHAR_RELATION.get(r, r)
+            tags.append(label)
+    return list(dict.fromkeys(tags))
+
+
 def ingest_dreambank_annotated(rag: RAGStore) -> None:
     """gustavecortal/DreamBank-annotated — 28,000 records (CC-BY-NC-4.0).
     Columns: id, name, number, time, date, gender, age, report, character, emotion
     """
-    if _source_count(rag, "dreambank_annotated") > 0:
-        print("  already ingested, skipping")
+    if _source_done(rag, "dreambank_annotated", expected=27000):
         return
-    import ast
     import pandas as pd
     url = "https://huggingface.co/datasets/gustavecortal/DreamBank-annotated/resolve/main/train.csv"
     path = download(url, CACHE / "dreambank_annotated.csv", "DreamBank Annotated (~27 MB)")
@@ -152,25 +212,19 @@ def ingest_dreambank_annotated(rag: RAGStore) -> None:
             if val is not None and str(val) not in ("nan", ""):
                 meta[meta_key] = str(val).strip()
 
-        # emotion column is a string repr of a list, e.g. "['anger', 'joy']"
+        # Emotion: HVdC codes like "CO D, AN 1MKA" → ["confusion", "anger"]
         raw_emotion = row.get("emotion", "")
         if isinstance(raw_emotion, str) and raw_emotion.strip():
-            try:
-                tags = ast.literal_eval(raw_emotion)
-                if isinstance(tags, list):
-                    meta["emotion_tags"] = [str(t).lower().strip() for t in tags if t]
-            except Exception:
-                pass
+            tags = _parse_hvdc_emotions(raw_emotion)
+            if tags:
+                meta["emotion_tags"] = tags
 
-        # character column same format
+        # Character: HVdC codes like "1MSA, 1FKA" → ["male_stranger", "female_known"]
         raw_char = row.get("character", "")
         if isinstance(raw_char, str) and raw_char.strip():
-            try:
-                tags = ast.literal_eval(raw_char)
-                if isinstance(tags, list):
-                    meta["character_tags"] = [str(t).lower().strip() for t in tags if t]
-            except Exception:
-                pass
+            tags = _parse_hvdc_characters(raw_char)
+            if tags:
+                meta["character_tags"] = tags
 
         items.append({"content": text, **meta})
 
@@ -181,8 +235,7 @@ def ingest_dreambank_annotated(rag: RAGStore) -> None:
 
 def ingest_sddb(rag: RAGStore) -> None:
     """SDDb — 44,556 records from Zenodo"""
-    if _source_count(rag, "sddb") > 0:
-        print("  already ingested, skipping")
+    if _source_done(rag, "sddb", expected=44000):
         return
     import pandas as pd
     url = "https://zenodo.org/records/11662064/files/dream-export.csv?download=1"
@@ -206,8 +259,7 @@ def ingest_dryad(rag: RAGStore) -> None:  # noqa: C901
              Male, Animal, Friends, Family, Dead&Imaginary,
              Aggression/Friendliness, A/CIndex, F/CIndex, S/CIndex, NegativeEmotions
     """
-    if _source_count(rag, "dryad_annotated") > 0:
-        print("  already ingested, skipping")
+    if _source_done(rag, "dryad_annotated", expected=20000):
         return
     import pandas as pd
     url = "https://datadryad.org/downloads/file_stream/401197"
@@ -267,8 +319,7 @@ def ingest_dryad(rag: RAGStore) -> None:  # noqa: C901
 
 def ingest_gutenberg_text(rag: RAGStore, url: str, filename: str, source: str, title: str) -> None:
     """Download a Gutenberg plain-text file, strip header/footer, chunk, and ingest."""
-    if _source_count(rag, source) > 0:
-        print("  already ingested, skipping")
+    if _source_done(rag, source, expected=100):
         return
     path = download(url, CACHE / filename, f"{title} (Gutenberg)")
     raw = path.read_text(encoding="utf-8", errors="replace")
@@ -297,8 +348,7 @@ def ingest_gutenberg_text(rag: RAGStore, url: str, filename: str, source: str, t
 
 def ingest_hvdc_manual(rag: RAGStore) -> None:
     """Scrape Hall/Van de Castle coding manual from dreams.ucsc.edu/Coding/"""
-    if _source_count(rag, "hvdc_manual") > 0:
-        print("  already ingested, skipping")
+    if _source_done(rag, "hvdc_manual", expected=20):
         return
     from bs4 import BeautifulSoup
 
@@ -350,6 +400,18 @@ def ingest_hvdc_manual(rag: RAGStore) -> None:
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def check_embedding_server() -> bool:
+    base = os.getenv("EMBED_BASE_URL", "http://localhost:8082/v1")
+    # Nebius / cloud API — just test that we can reach it
+    if "nebius" in base.lower() or "api." in base.lower():
+        try:
+            from app.core.qwen_embeddings import QwenEmbeddings
+            emb = QwenEmbeddings()
+            vec = emb.embed_query("test")
+            return len(vec) > 0
+        except Exception as e:
+            print(f"  Embedding API test failed: {e}")
+            return False
+    # Local llama.cpp
     try:
         return requests.get("http://localhost:8082/health", timeout=3).status_code == 200
     except Exception:

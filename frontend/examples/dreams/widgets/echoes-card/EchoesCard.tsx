@@ -1,7 +1,15 @@
 interface Echo { date: string; title: string; text: string }
-interface Props { echoes: Echo[] }
+interface Props { echoes: Echo[] | string }
 
-export default function EchoesCard({ echoes }: Props) {
+function parseEchoes(raw: unknown): Echo[] {
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === "string") { try { return JSON.parse(raw.replace(/'/g, '"')); } catch { return []; } }
+  return [];
+}
+
+export default function EchoesCard({ echoes: rawEchoes }: Props) {
+  const echoes = parseEchoes(rawEchoes);
+  if (!echoes.length) return null;
   return (
     <div
       style={{

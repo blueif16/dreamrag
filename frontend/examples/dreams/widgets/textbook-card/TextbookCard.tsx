@@ -10,6 +10,7 @@ interface Props {
 }
 
 export default function TextbookCard({ symbol, excerpt, author, source }: Props) {
+  if (!excerpt) return null;
   return (
     <div
       style={{

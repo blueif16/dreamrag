@@ -88,7 +88,6 @@ Copied the scaffold's core machinery into `dreamrag/frontend/`:
 - [ ] Run SQL migrations in Supabase SQL editor (001, 002, 003)
 - [ ] Set up llama.cpp embedding server locally (`Qwen3-Embedding-0.6B-Q8_0.gguf` on `:8082`)
 - [ ] Run `python scripts/ingest.py` to populate the DB
-- [ ] Run `python scripts/ingest.py --backfill-metadata` to patch metadata on already-ingested 22K records (no re-embed)
 - [ ] Run `python scripts/build_corpus_stats.py` to populate `corpus_stats` from annotated metadata
 - [ ] Build `doc_relations` graph edges (symbolizes, similar_to, co_occurs, follows)
 
@@ -111,7 +110,7 @@ Copied the scaffold's core machinery into `dreamrag/frontend/`:
 - [x] Ingest pipeline upgraded:
   - DreamBank Annotated: stores `emotion_tags` + `character_tags` in metadata JSONB
   - Dryad: stores all HVdC numeric scores as `hvdc_*` keys in metadata JSONB
-  - `--backfill-metadata` flag: patches already-ingested records without re-embedding
+  - `ingest_batch` auto-patches missing metadata on re-run (no re-embed) — `--backfill-metadata` flag removed, logic merged in
 - [x] `003_corpus_stats.sql` migration: `corpus_stats` table + `get_corpus_stat()` function
 - [x] `scripts/build_corpus_stats.py`: aggregates emotion/symbol/HVdC frequencies from `documents.metadata` → upserts into `corpus_stats` for StatCard population baselines
 - [x] SourcesPanel removed from composition rules — replaced by per-widget `source_chunk_ids` prop
@@ -119,7 +118,7 @@ Copied the scaffold's core machinery into `dreamrag/frontend/`:
 **Decision log:**
 - Self-contained widgets fetch own data so agent doesn't need to query user SQL — keeps agent tool calls to ≤4 per dashboard
 - `source_chunk_ids` on each widget (not a separate SourcesPanel) — provenance is per-card, traceable to exact retrieval results
-- Metadata backfill instead of re-ingest — 22K already-ingested dreams get emotion/HVdC metadata via content_hash UPDATE, no re-embedding
+- Metadata patching merged into `ingest_batch` — safe to re-run, fills missing emotion/HVdC metadata via content_hash UPDATE without re-embedding
 
 ### Phase 4: Make Widgets Smart
 - [ ] Implement SourceDrawer: "N sources" disclosure on each card → shows chunk content, source DB, score, graph hop depth

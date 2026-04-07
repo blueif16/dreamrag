@@ -14,7 +14,24 @@ const PARTICLES = Array.from({ length: 12 }, (_, i) => ({
   duration: 4 + (i % 4),
 }));
 
-export default function DreamAtmosphere({ center_symbol, satellites }: Props) {
+function parseSatellites(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.filter(Boolean);
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed === "[]") return [];
+    // Python repr: "['a','b']"
+    if (trimmed.startsWith("[")) {
+      try { return JSON.parse(trimmed.replace(/'/g, '"')); } catch {}
+    }
+    // Comma-separated: "a, b, c"
+    return trimmed.split(",").map((s) => s.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+export default function DreamAtmosphere({ center_symbol, satellites: rawSatellites }: Props) {
+  const satellites = parseSatellites(rawSatellites);
+  if (!satellites.length) return null;
   const cx = 200;
   const cy = 180;
   const orbitR = 150;

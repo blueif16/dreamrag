@@ -5,10 +5,63 @@ Tools here are standalone backend tools (DB operations, retrieval).
 Spawn tools live in examples/dreams/widgets/*/widget.config.ts (dumb) or SUBAGENTS (smart).
 """
 import os
+import re
 import logging
 from langchain_core.tools import tool
 
 logger = logging.getLogger(__name__)
+
+# ── Simple keyword-based tag extraction (no model dependency) ─────────────
+
+_EMOTION_WORDS = {
+    "anxiety": ["anxiety", "anxious", "worried", "nervous", "panic", "fear", "dread", "uneasy"],
+    "joy": ["joy", "happy", "happiness", "delight", "elated", "euphoria", "bliss", "cheerful"],
+    "sadness": ["sad", "sadness", "grief", "sorrow", "crying", "tears", "melancholy", "depressed"],
+    "anger": ["anger", "angry", "rage", "furious", "frustrated", "irritated", "hostile"],
+    "fear": ["fear", "scared", "terrified", "frightened", "horror", "afraid", "phobia"],
+    "confusion": ["confused", "confusion", "lost", "disoriented", "bewildered", "puzzled"],
+    "peace": ["peace", "peaceful", "calm", "serene", "tranquil", "relaxed", "content"],
+    "excitement": ["excited", "excitement", "thrill", "exhilarated", "adrenaline"],
+    "love": ["love", "loving", "affection", "tender", "embrace", "romantic", "intimacy"],
+    "loneliness": ["lonely", "loneliness", "alone", "isolated", "abandoned", "solitude"],
+    "guilt": ["guilt", "guilty", "shame", "ashamed", "regret", "remorse"],
+    "wonder": ["wonder", "awe", "amazed", "astonished", "magical", "miraculous"],
+}
+
+_SYMBOL_WORDS = [
+    "water", "ocean", "sea", "river", "lake", "rain", "flood", "wave",
+    "fire", "flame", "burning", "smoke",
+    "flying", "flight", "falling", "floating",
+    "house", "room", "door", "window", "stairs", "hallway", "building",
+    "car", "driving", "road", "path", "bridge",
+    "teeth", "tooth", "hair", "hands", "eyes", "body",
+    "snake", "spider", "dog", "cat", "bird", "fish", "animal",
+    "tree", "forest", "mountain", "garden", "flower",
+    "death", "dying", "dead", "funeral", "grave",
+    "baby", "child", "mother", "father", "family",
+    "school", "exam", "test", "classroom",
+    "chase", "chasing", "running", "escape", "hiding",
+    "mirror", "shadow", "darkness", "light", "sun", "moon", "stars",
+    "phone", "key", "clock", "money", "book",
+    "naked", "clothes", "wedding", "ring",
+]
+
+
+def _extract_tags(text: str) -> tuple[list[str], list[str]]:
+    """Extract emotion and symbol tags from dream text using keyword matching."""
+    lower = text.lower()
+    words = set(re.findall(r"[a-z]+", lower))
+
+    emotions = []
+    for label, keywords in _EMOTION_WORDS.items():
+        if any(kw in words for kw in keywords):
+            emotions.append(label)
+
+    symbols = [s for s in _SYMBOL_WORDS if s in words]
+    # Deduplicate while preserving order
+    symbols = list(dict.fromkeys(symbols))
+
+    return emotions[:5], symbols[:8]
 
 
 @tool
@@ -38,21 +91,35 @@ async def record_dream(dream_text: str, user_id: str = "default") -> dict:
         # Embed the dream text
         embedding = embeddings.embed_documents([dream_text])[0]
 
+        # Extract tags via keyword matching
+        emotion_tags, symbol_tags = _extract_tags(dream_text)
+
         # Insert into user_dreams
         result = client.table("user_dreams").insert({
             "user_id": user_id,
             "raw_text": dream_text,
             "embedding": embedding,
+            "emotion_tags": emotion_tags,
+            "symbol_tags": symbol_tags,
         }).execute()
 
         dream_id = result.data[0]["id"] if result.data else None
-        logger.info(f"[record_dream] saved dream_id={dream_id} user={user_id}")
+        logger.info(f"[record_dream] saved dream_id={dream_id} user={user_id} emotions={emotion_tags} symbols={symbol_tags}")
+
+        # Recompute cached profile
+        from app.core.user_profile import recompute_profile
+        try:
+            recompute_profile(user_id)
+        except Exception as e:
+            logger.error(f"[record_dream] recompute_profile failed: {e}")
 
         return {
             "status": "recorded",
             "dream_id": dream_id,
             "user_id": user_id,
             "preview": dream_text[:120],
+            "emotion_tags": emotion_tags,
+            "symbol_tags": symbol_tags,
         }
 
     except Exception as e:
@@ -162,5 +229,44 @@ async def get_symbol_graph(symbol: str, user_id: str = "default", top_k: int = 6
         return {"satellites": [], "error": str(e)}
 
 
+@tool
+async def get_user_profile(user_id: str = "default") -> dict:
+    """Fetch the user's aggregated dream profile (streak, heatmap, emotions, recurrence).
+    Use this to populate history-dependent cards like dream_streak and heatmap_calendar.
+
+    Args:
+        user_id: Session or user identifier (default: "default").
+    """
+    try:
+        from supabase import create_client
+
+        supabase_url = os.getenv("SUPABASE_URL", "")
+        supabase_key = os.getenv("SUPABASE_SECRET_KEY") or os.getenv("SUPABASE_KEY", "")
+        if not supabase_url or not supabase_key:
+            return {"status": "error", "reason": "supabase_not_configured"}
+
+        client = create_client(supabase_url, supabase_key)
+        result = client.table("user_profiles").select("*").eq("user_id", user_id).execute()
+
+        if result.data:
+            return result.data[0]
+
+        # No profile yet — return empty defaults
+        return {
+            "user_id": user_id,
+            "emotion_distribution": [],
+            "recurrence": [],
+            "current_streak": 0,
+            "last7": [False] * 7,
+            "heatmap_data": [],
+            "heatmap_month": "",
+            "total_dreams": 0,
+        }
+
+    except Exception as e:
+        logger.error(f"[get_user_profile] error: {e}")
+        return {"status": "error", "error": str(e)}
+
+
 # Updated tool list
-all_tools = [record_dream, search_dreams, get_symbol_graph]
+all_tools = [record_dream, search_dreams, get_symbol_graph, get_user_profile]

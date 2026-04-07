@@ -5,14 +5,18 @@ import { Canvas, useFrame, useLoader } from "@react-three/fiber";
 import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { sampleMeshWithColors } from "./sampleMesh";
-import { generateWhale, generateBigMoon } from "./geometries";
+import { generateBigMoon } from "./geometries";
 import { particleVertex, particleFragment } from "./shaders";
 
 const PARTICLE_COUNT = 50000;
+// Cloud-sampled iridescent palette — cotton pink, powder blue, lilac, peach blush
+// + warm champagne gold accent for dense core (echoing the gold stars)
 const COLORS = {
-  a: new THREE.Color("#ffd1ec"),
-  b: new THREE.Color("#a8d8ff"),
-  c: new THREE.Color("#fff4a8"),
+  cottonPink: new THREE.Color("#fbcfe8"),
+  powderBlue: new THREE.Color("#bfdbfe"),
+  lilac: new THREE.Color("#ddd6fe"),
+  peachBlush: new THREE.Color("#fed7aa"),
+  gold: new THREE.Color("#fde68a"),
 };
 
 // Module-level progress — GSAP ScrollTrigger writes here, useFrame reads
@@ -23,6 +27,7 @@ function Particles() {
   const matRef = useRef<THREE.ShaderMaterial>(null);
 
   const gltf = useLoader(GLTFLoader, "/models.glb");
+  const whaleGltf = useLoader(GLTFLoader, "/whale.glb");
 
   const { geometry, uniforms } = useMemo(() => {
     let targetMesh: THREE.Mesh | null = null;
@@ -49,7 +54,31 @@ function Particles() {
       model1Colors = new Float32Array(PARTICLE_COUNT * 3).fill(1);
     }
 
-    const model2Positions = generateWhale(PARTICLE_COUNT);
+    // Sample whale from GLB
+    let whaleMesh: THREE.Mesh | null = null;
+    whaleGltf.scene.traverse((child) => {
+      if (!whaleMesh && (child as THREE.Mesh).isMesh) {
+        whaleMesh = child as THREE.Mesh;
+      }
+    });
+    let model2Positions: Float32Array;
+    if (whaleMesh) {
+      const whaleResult = sampleMeshWithColors(whaleMesh, PARTICLE_COUNT);
+      model2Positions = whaleResult.positions;
+      // Rotate 90° around Y (swap X↔Z) so whale faces sideways, and scale down
+      const WHALE_SCALE = 1.8;
+      for (let i = 0; i < PARTICLE_COUNT; i++) {
+        const x = model2Positions[i * 3];
+        const z = model2Positions[i * 3 + 2];
+        model2Positions[i * 3] = -z * WHALE_SCALE;
+        model2Positions[i * 3 + 1] *= WHALE_SCALE;
+        model2Positions[i * 3 + 2] = x * WHALE_SCALE;
+      }
+      console.log("[ParticleMorph] Whale sampled, scale:", WHALE_SCALE);
+    } else {
+      model2Positions = new Float32Array(PARTICLE_COUNT * 3);
+    }
+
     const model3Positions = generateBigMoon(PARTICLE_COUNT);
 
     const geo = new THREE.BufferGeometry();
@@ -66,15 +95,17 @@ function Particles() {
       uTime: { value: 0 },
       uProgress: { value: 0 },
       uSize: { value: 28.0 },
-      uColorA: { value: COLORS.a },
-      uColorB: { value: COLORS.b },
-      uColorC: { value: COLORS.c },
+      uColorCottonPink: { value: COLORS.cottonPink },
+      uColorPowderBlue: { value: COLORS.powderBlue },
+      uColorLilac: { value: COLORS.lilac },
+      uColorPeachBlush: { value: COLORS.peachBlush },
+      uColorGold: { value: COLORS.gold },
       uUseVertexColors: { value: 1.0 },
       uDissolve: { value: 0 },
     };
 
     return { geometry: geo, uniforms: u };
-  }, [gltf]);
+  }, [gltf, whaleGltf]);
 
   useFrame((_, delta) => {
     if (!matRef.current) return;

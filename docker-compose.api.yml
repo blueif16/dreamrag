@@ -1,0 +1,26 @@
+services:
+  backend:
+    build:
+      context: ./frontend
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./frontend/backend/.env
+    environment:
+      LLM_PROVIDER: nebius
+      FRONTEND_URL: http://frontend:3000
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    environment:
+      REMOTE_ACTION_URL: http://backend:8000/copilotkit
+      NODE_ENV: production

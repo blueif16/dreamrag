@@ -13,9 +13,19 @@ const EMOTION_COLORS: Record<string, { bg: string; color: string }> = {
 };
 
 interface Snippet { text: string; emotions: string[]; similarity: number }
-interface Props { symbol: string; snippets: Snippet[] }
+interface Props { symbol: string; snippets: Snippet[] | string }
 
-export default function CommunityMirror({ symbol, snippets }: Props) {
+function parseSnippets(raw: unknown): Snippet[] {
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === "string") {
+    try { return JSON.parse(raw.replace(/'/g, '"')); } catch { return []; }
+  }
+  return [];
+}
+
+export default function CommunityMirror({ symbol, snippets: rawSnippets }: Props) {
+  const snippets = parseSnippets(rawSnippets);
+  if (!snippets.length) return null;
   return (
     <div
       style={{
@@ -69,7 +79,7 @@ export default function CommunityMirror({ symbol, snippets }: Props) {
                 })}
               </div>
               <div style={{ fontSize: 11, fontWeight: 600, color: "#5B6EAF", background: "rgba(91,110,175,0.10)", padding: "2px 8px", borderRadius: 99 }}>
-                {s.similarity}% match
+                {s.similarity < 1 ? `${Math.round(s.similarity * 100)}%` : `${Math.round(s.similarity)}%`} match
               </div>
             </div>
             <p style={{ margin: 0, fontSize: 12.5, lineHeight: 1.65, color: "#3a3a4a", fontStyle: "italic" }}>

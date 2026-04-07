@@ -368,6 +368,7 @@ def _sync_dumb_widgets(state: OrchestratorState, patch: dict) -> None:
 
     current_active = list(state.get("active_widgets") or [])
     changed = False
+    seen_replace_all = False
 
     for tm in latest_tool_results:
         try:
@@ -382,6 +383,13 @@ def _sync_dumb_widgets(state: OrchestratorState, patch: dict) -> None:
             operation = content.get("operation", "replace_all")
             if not widget_id:
                 continue
+            # Guard: if the LLM sends multiple replace_all in one turn,
+            # only the first actually clears; the rest become "add".
+            if operation == "replace_all":
+                if seen_replace_all:
+                    operation = "add"
+                else:
+                    seen_replace_all = True
             new_widget = {"id": widget_id, "type": "dumb", "props": content.get("props", {})}
             if operation == "replace_all":
                 current_active = [new_widget]
@@ -577,7 +585,10 @@ async def tools_node(state: OrchestratorState) -> dict:
         elif name in _backend_tool_map:
             # Standalone backend tool (MCP queries, DB lookups, etc.)
             fn = _backend_tool_map[name]
-            result = fn.func(**tc["args"])
+            if fn.coroutine:
+                result = await fn.coroutine(**tc["args"])
+            else:
+                result = fn.func(**tc["args"])
             logger.info(f"[TOOLS] backend '{name}' → result={str(result)[:100]}")
             messages.append(ToolMessage(
                 content=json.dumps(result) if isinstance(result, dict) else str(result),

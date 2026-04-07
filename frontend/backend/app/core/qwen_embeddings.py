@@ -19,6 +19,15 @@ EMBED_BASE_URL = os.getenv("EMBED_BASE_URL", "http://localhost:8082/v1")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "qwen3-embedding-0.6b")
 EMBED_DIM = int(os.getenv("EMBED_DIM", "1024"))
 
+def _api_key() -> str:
+    """Use NEBIUS_API_KEY for Nebius endpoints, otherwise 'not-needed' for local llama.cpp."""
+    if "nebius" in EMBED_BASE_URL.lower():
+        key = os.getenv("NEBIUS_API_KEY", "")
+        if not key:
+            raise ValueError("NEBIUS_API_KEY required when EMBED_BASE_URL points to Nebius")
+        return key
+    return "not-needed"
+
 _QUERY_INSTRUCTION = "Instruct: Given a dream journal entry, retrieve similar dream narratives\nQuery: "
 _DOC_INSTRUCTION = ""  # Documents are ingested as-is; instruction only needed at query time
 
@@ -40,15 +49,15 @@ class QwenEmbeddings:
     ):
         self.model = model
         self.output_dimensionality = output_dimensionality
-        self._client = OpenAI(base_url=base_url, api_key="not-needed")
+        self._client = OpenAI(base_url=base_url, api_key=_api_key())
 
     def _embed(self, texts: List[str]) -> List[List[float]]:
-        response = self._client.embeddings.create(
-            model=self.model,
-            input=texts,
-            # llama.cpp accepts dimensions param for MRL truncation
-            extra_body={"dimensions": self.output_dimensionality} if self.output_dimensionality < 1024 else {},
-        )
+        kwargs: dict = {"model": self.model, "input": texts}
+        if "nebius" in self._client.base_url.host.lower():
+            kwargs["dimensions"] = self.output_dimensionality
+        elif self.output_dimensionality < 1024:
+            kwargs["extra_body"] = {"dimensions": self.output_dimensionality}
+        response = self._client.embeddings.create(**kwargs)
         vecs = [item.embedding for item in sorted(response.data, key=lambda x: x.index)]
         # Normalise just in case server didn't (--embd-normalize 2 should handle this)
         return [_l2_norm(v) for v in vecs]

@@ -4,6 +4,7 @@ interface Props {
 }
 
 export default function FollowupChat({ dream_title, prompts }: Props) {
+  if (!prompts?.length) return null;
   return (
     <div
       style={{

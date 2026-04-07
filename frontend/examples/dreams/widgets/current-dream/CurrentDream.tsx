@@ -7,6 +7,7 @@ interface Props {
 }
 
 export default function CurrentDream({ title, quote, meaning, subconscious_emotion, life_echo }: Props) {
+  if (!meaning && !title) return null;
   const panels = [
     { title: "Meaning",              text: meaning },
     { title: "Subconscious Emotion", text: subconscious_emotion },
