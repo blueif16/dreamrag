@@ -1,138 +1,160 @@
-"use client";
-
-import { useEffect, useRef } from "react";
-
 const FONTS = `
-  @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&family=DM+Sans:wght@300;400;500&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600&family=DM+Sans:wght@300;400;500;600&display=swap');
+`;
+
+const FADE_IN = `
+  @keyframes coocFadeIn {
+    from { opacity: 0; transform: scale(0.8); }
+    to   { opacity: 1; transform: scale(1); }
+  }
 `;
 
 interface Node { label: string; weight: number }
-interface Props { center_symbol: string; nodes: Node[] }
+interface Props { center_symbol: string; nodes: Node[] | string }
 
-function nodeRadius(w: number) { return 14 + w * 16; }
-function edgeWidth(w: number)  { return 1 + w * 5; }
-function edgeOpacity(w: number){ return 0.25 + w * 0.45; }
+function parseNodes(raw: unknown): Node[] {
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === "string") {
+    try { return JSON.parse(raw.replace(/'/g, '"')); } catch { return []; }
+  }
+  return [];
+}
 
-const CENTER_X = 400;
-const CENTER_Y = 248;
-const CENTER_R = 42;
-const ORBIT_R  = 185;
+function nodeRadius(w: number): number { return 16 + w * 20; }
 
-export default function SymbolCooccurrenceNetwork({ center_symbol, nodes }: Props) {
-  const pulseRef = useRef<SVGCircleElement>(null);
+const CENTER_X = 200;
+const CENTER_Y = 180;
+const CENTER_R = 32;
+const ORBIT_R = 120;
 
-  useEffect(() => {
-    const el = pulseRef.current;
-    if (!el) return;
-    let frame = 0;
-    let raf: number;
-    const animate = () => {
-      frame++;
-      el.setAttribute("r", String(CENTER_R * (1 + 0.06 * Math.sin(frame * 0.04))));
-      el.setAttribute("opacity", String(0.18 + 0.10 * Math.sin(frame * 0.04)));
-      raf = requestAnimationFrame(animate);
-    };
-    raf = requestAnimationFrame(animate);
-    return () => cancelAnimationFrame(raf);
-  }, []);
+const container: React.CSSProperties = {
+  width: "100%",
+  height: "100%",
+  background: "rgba(255,255,255,0.55)",
+  backdropFilter: "blur(18px)",
+  WebkitBackdropFilter: "blur(18px)",
+  borderRadius: 22,
+  border: "1px solid rgba(255,255,255,0.65)",
+  boxShadow: "0 2px 20px rgba(80,68,100,0.05), inset 0 1px 0 rgba(255,255,255,0.7)",
+  padding: "24px 26px",
+  display: "flex",
+  flexDirection: "column" as const,
+  fontFamily: "'DM Sans', system-ui, sans-serif",
+  overflow: "hidden",
+};
+
+export default function SymbolCooccurrenceNetwork({ center_symbol, nodes: rawNodes }: Props) {
+  const nodes = parseNodes(rawNodes);
+  if (!nodes.length) return null;
 
   const positioned = nodes.map((n, i) => {
     const angle = (Math.PI * 2 * i) / nodes.length - Math.PI / 2;
-    return { ...n, x: CENTER_X + ORBIT_R * Math.cos(angle), y: CENTER_Y + ORBIT_R * Math.sin(angle) };
+    return {
+      ...n,
+      x: CENTER_X + ORBIT_R * Math.cos(angle),
+      y: CENTER_Y + ORBIT_R * Math.sin(angle),
+    };
   });
 
-  return (
-    <div style={{
-      width: "100%",
-      height: "100%",
-      background: "rgba(255,255,255,0.60)",
-      backdropFilter: "blur(16px)",
-      WebkitBackdropFilter: "blur(16px)",
-      borderRadius: 20,
-      border: "1px solid rgba(255,255,255,0.75)",
-      boxShadow: "0 4px 24px rgba(91,110,175,0.08), 0 1px 0 rgba(255,255,255,0.8) inset",
-      padding: "20px 24px",
-      display: "flex",
-      flexDirection: "column",
-      gap: 0,
-      overflow: "hidden",
-      fontFamily: "'DM Sans', system-ui, sans-serif",
-      minHeight: 380,
-    }}>
-      <style>{FONTS}</style>
-      <style>{`
-        @keyframes fadeInNode { from { opacity: 0; transform: scale(0.7); } to { opacity: 1; transform: scale(1); } }
-        .cooc-node { animation: fadeInNode 0.5s ease both; }
-      `}</style>
+  // Build the text list for below the SVG
+  const sortedNodes = [...nodes].sort((a, b) => b.weight - a.weight);
 
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 4 }}>
-        <div>
-          <div style={{ fontSize: 10, fontWeight: 500, letterSpacing: "0.12em", textTransform: "uppercase", color: "#5B6EAF", marginBottom: 3 }}>
-            Symbol Co-occurrence Network
-          </div>
-          <div style={{ fontFamily: "'Playfair Display', Georgia, serif", fontSize: 16, fontWeight: 600, color: "#1a1a2e" }}>
-            What appears alongside {center_symbol}
-          </div>
-        </div>
-        <div style={{ fontSize: 11, color: "#aaa", textAlign: "right", lineHeight: 1.5 }}>
-          Line weight = co-occurrence strength
-          <br />Built from doc_relations edges
-        </div>
+  return (
+    <div style={container}>
+      <style>{FONTS}</style>
+      <style>{FADE_IN}</style>
+
+      {/* Question label */}
+      <div style={{
+        fontSize: 10, fontWeight: 600, letterSpacing: "0.14em",
+        textTransform: "uppercase" as const, color: "#9b8fb8", marginBottom: 10,
+      }}>
+        What appears alongside this symbol?
       </div>
 
-      <div style={{ flex: 1, minHeight: 0 }}>
-        <svg viewBox="0 0 800 496" width="100%" height="100%" style={{ overflow: "visible" }}>
-          <defs>
-            <radialGradient id="centerGrad" cx="50%" cy="35%" r="60%">
-              <stop offset="0%" stopColor="#7B68C8" />
-              <stop offset="100%" stopColor="#5B6EAF" />
-            </radialGradient>
-            <radialGradient id="nodeGrad" cx="40%" cy="30%" r="60%">
-              <stop offset="0%" stopColor="#EEEAFF" />
-              <stop offset="100%" stopColor="#D4CCFF" />
-            </radialGradient>
-            <filter id="glow">
-              <feGaussianBlur stdDeviation="4" result="blur" />
-              <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-            </filter>
-            <filter id="softglow">
-              <feGaussianBlur stdDeviation="2.5" result="blur" />
-              <feMerge><feMergeNode in="blur" /><feMergeNode in="SourceGraphic" /></feMerge>
-            </filter>
-          </defs>
+      {/* Section title */}
+      <div style={{
+        fontFamily: "'Cormorant Garamond', Georgia, serif",
+        fontSize: 20, fontWeight: 600, color: "#2d2640",
+        lineHeight: 1.2, marginBottom: 14,
+      }}>
+        Symbol Network
+      </div>
 
+      {/* SVG network */}
+      <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        <svg viewBox="0 0 400 360" width="100%" style={{ maxHeight: "100%" }}>
+          {/* Connecting lines */}
           {positioned.map((n) => (
-            <line key={n.label} x1={CENTER_X} y1={CENTER_Y} x2={n.x} y2={n.y}
-              stroke="url(#centerGrad)" strokeWidth={edgeWidth(n.weight)}
-              opacity={edgeOpacity(n.weight)} strokeLinecap="round" />
+            <line
+              key={`edge-${n.label}`}
+              x1={CENTER_X} y1={CENTER_Y}
+              x2={n.x} y2={n.y}
+              stroke="rgba(107,95,165,0.2)"
+              strokeWidth={1 + n.weight * 4}
+              strokeLinecap="round"
+            />
           ))}
 
-          <circle ref={pulseRef} cx={CENTER_X} cy={CENTER_Y} r={CENTER_R}
-            fill="none" stroke="#5B6EAF" strokeWidth={2} opacity={0.18} />
-          <circle cx={CENTER_X} cy={CENTER_Y} r={CENTER_R} fill="url(#centerGrad)" filter="url(#glow)" />
-          <text x={CENTER_X} y={CENTER_Y + 1} textAnchor="middle" dominantBaseline="middle"
-            fontFamily="'Playfair Display', Georgia, serif" fontSize={14} fontWeight={700} fill="white">
+          {/* Center node */}
+          <circle
+            cx={CENTER_X} cy={CENTER_Y} r={CENTER_R}
+            fill="#6b5fa5"
+          />
+          <text
+            x={CENTER_X} y={CENTER_Y + 1}
+            textAnchor="middle" dominantBaseline="middle"
+            fontFamily="'Cormorant Garamond', Georgia, serif"
+            fontSize={13} fontWeight={600} fill="white"
+          >
             {center_symbol}
           </text>
 
+          {/* Satellite nodes */}
           {positioned.map((n, i) => {
             const r = nodeRadius(n.weight);
             return (
-              <g key={n.label} className="cooc-node" style={{ animationDelay: `${i * 60}ms` }}>
-                <circle cx={n.x} cy={n.y} r={r} fill="url(#nodeGrad)"
-                  stroke="rgba(91,110,175,0.30)" strokeWidth={1.5} filter="url(#softglow)" />
-                <text x={n.x} y={n.y} textAnchor="middle" dominantBaseline="middle"
-                  fontFamily="'DM Sans', system-ui, sans-serif" fontSize={11} fontWeight={500} fill="#3a3a6a">
+              <g
+                key={n.label}
+                style={{
+                  animation: `coocFadeIn 0.4s ease both`,
+                  animationDelay: `${i * 80}ms`,
+                  transformOrigin: `${n.x}px ${n.y}px`,
+                }}
+              >
+                <circle
+                  cx={n.x} cy={n.y} r={r}
+                  fill="rgba(238,234,255,0.6)"
+                  stroke="rgba(107,95,165,0.2)"
+                  strokeWidth={1}
+                />
+                <text
+                  x={n.x} y={n.y}
+                  textAnchor="middle" dominantBaseline="middle"
+                  fontFamily="'DM Sans', system-ui, sans-serif"
+                  fontSize={10} fontWeight={500} fill="#2d2640"
+                >
                   {n.label}
-                </text>
-                <text x={n.x} y={n.y + 13} textAnchor="middle" dominantBaseline="middle"
-                  fontFamily="'DM Sans', system-ui, sans-serif" fontSize={9} fill="#5B6EAF" opacity={0.75}>
-                  {Math.round(n.weight * 100)}%
                 </text>
               </g>
             );
           })}
         </svg>
+      </div>
+
+      {/* Text list of connections */}
+      <div style={{
+        fontSize: 11, color: "#8a7fa0", lineHeight: 1.6,
+        marginTop: 10, paddingTop: 10,
+        borderTop: "1px solid rgba(155,143,184,0.12)",
+      }}>
+        {sortedNodes.map((n, i) => (
+          <span key={n.label}>
+            <span style={{ color: "#524a65", fontWeight: 500 }}>{n.label}</span>
+            <span>{" "}({Math.round(n.weight * 100)}%)</span>
+            {i < sortedNodes.length - 1 && <span> {"\u00B7"} </span>}
+          </span>
+        ))}
       </div>
     </div>
   );

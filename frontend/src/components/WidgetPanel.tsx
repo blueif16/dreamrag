@@ -1,8 +1,9 @@
 "use client";
 
-import { Suspense, useState, useCallback, useEffect, useMemo } from "react";
+import { Suspense, useState, useCallback, useEffect, useMemo, useRef } from "react";
 import { createPortal } from "react-dom";
 import { widgetEntries } from "@/lib/widgetEntries";
+import { isWidgetEmpty } from "@/lib/widgetEmpty";
 import type { SpawnedWidget } from "@/lib/types";
 import type { WidgetLayout } from "@/types/state";
 
@@ -11,18 +12,18 @@ function layoutClasses(layout?: WidgetLayout): string {
   const h = layout?.height ?? "compact";
   const widthClass =
     w === "full"
-      ? "col-span-3"
+      ? "col-span-6"
       : w === "half"
-      ? "col-span-2"
-      : "col-span-1";
+      ? "col-span-3"
+      : "col-span-2";
   const heightClass =
     h === "fill"
       ? "min-h-[calc(100vh-8rem)]"
       : h === "tall"
-      ? "min-h-[500px]"
+      ? "min-h-[420px]"
       : h === "medium"
-      ? "min-h-[300px]"
-      : "";
+      ? "min-h-[280px]"
+      : "min-h-[160px]";
   return `${widthClass} ${heightClass}`.trim();
 }
 
@@ -36,42 +37,6 @@ function parseChunkIds(raw: unknown): number[] {
     return trimmed.split(",").map((s) => Number(s.trim())).filter(Boolean);
   }
   return [];
-}
-
-/* ---------- pre-render empty check ---------- */
-function parseSatellites(raw: unknown): string[] {
-  if (Array.isArray(raw)) return raw.filter(Boolean);
-  if (typeof raw === "string") {
-    const t = raw.trim();
-    if (!t || t === "[]") return [];
-    if (t.startsWith("[")) { try { return JSON.parse(t.replace(/'/g, '"')); } catch {} }
-    return t.split(",").map((s) => s.trim()).filter(Boolean);
-  }
-  return [];
-}
-
-function parseSnippets(raw: unknown): unknown[] {
-  if (Array.isArray(raw)) return raw;
-  if (typeof raw === "string") { try { return JSON.parse(raw.replace(/'/g, '"')); } catch { return []; } }
-  return [];
-}
-
-function isWidgetEmpty(id: string, props: Record<string, unknown>): boolean {
-  switch (id) {
-    case "community_mirror": return !parseSnippets(props.snippets).length;
-    case "echoes_card": {
-      const e = props.echoes;
-      if (!e) return true;
-      if (Array.isArray(e)) return !e.length;
-      if (typeof e === "string") { try { return !JSON.parse(e.replace(/'/g, '"')).length; } catch { return true; } }
-      return true;
-    }
-    case "dream_atmosphere": return !parseSatellites(props.satellites).length;
-    case "textbook_card": return !props.excerpt;
-    case "followup_chat": return !props.prompts || !(props.prompts as unknown[]).length;
-    case "current_dream": return !props.meaning && !props.title;
-    default: return false;
-  }
 }
 
 /* ---------- chunk detail types ---------- */
@@ -177,56 +142,182 @@ function ChunkOverlay({ chunkId, onClose }: { chunkId: number; onClose: () => vo
   );
 }
 
-/* ---------- citation back face ---------- */
-function CitationBack({
-  widgetName, chunkIds, onFlip, onChunkClick,
-}: {
-  widgetName: string; chunkIds: number[]; onFlip: () => void; onChunkClick: (id: number) => void;
+
+/* ---------- focusable card wrapper ---------- */
+function FocusableCard({ id, Component, props, isFocused, onFocus, onDismiss }: SpawnedWidget & {
+  isFocused: boolean;
+  onFocus: () => void;
+  onDismiss: () => void;
+}) {
+  const entry = widgetEntries.find((e) => e.config.id === id);
+  const [showSources, setShowSources] = useState(false);
+  const [viewingChunk, setViewingChunk] = useState<number | null>(null);
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [cardRect, setCardRect] = useState<DOMRect | null>(null);
+
+  const { source_chunk_ids, ...widgetProps } = props;
+  const chunkIds = parseChunkIds(source_chunk_ids);
+  const widgetName = entry?.config.tool?.name?.replace(/^show_/, "").replace(/_/g, " ") ?? id.replace(/_/g, " ");
+  const displayName = widgetName.charAt(0).toUpperCase() + widgetName.slice(1);
+
+  // Capture card position when focused so the portal overlay can mirror it
+  // Also decide whether the action panel goes left or right
+  const [panelSide, setPanelSide] = useState<"right" | "left">("right");
+  useEffect(() => {
+    if (isFocused && cardRef.current) {
+      const rect = cardRef.current.getBoundingClientRect();
+      setCardRect(rect);
+      // If less than 200px of space to the right, render on the left
+      setPanelSide(window.innerWidth - rect.right < 200 ? "left" : "right");
+    } else {
+      setCardRect(null);
+      setShowSources(false);
+    }
+  }, [isFocused]);
+
+  const handleCardClick = useCallback(() => {
+    if (!isFocused) onFocus();
+  }, [isFocused, onFocus]);
+
+  const handleDismiss = useCallback(() => {
+    setShowSources(false);
+    onDismiss();
+  }, [onDismiss]);
+
+  return (
+    <>
+      {/* grid placeholder — always in flow */}
+      <div
+        ref={cardRef}
+        className={layoutClasses(entry?.config.layout)}
+        style={{ cursor: isFocused ? "default" : "pointer" }}
+        onClick={handleCardClick}
+      >
+        <div style={{ width: "100%", height: "100%", borderRadius: 20, opacity: isFocused ? 0 : 1, transition: "opacity 0.2s ease" }}>
+          <Suspense fallback={<div className="animate-pulse h-32 rounded-[20px]" style={{ background: "rgba(238,234,255,0.3)" }} />}>
+            <Component {...widgetProps} widgetId={id} />
+          </Suspense>
+        </div>
+      </div>
+
+      {/* when focused: portal the card + action panel above the backdrop */}
+      {isFocused && cardRect && createPortal(
+        <div style={{ position: "fixed", inset: 0, zIndex: 95, pointerEvents: "none" }}>
+          {/* card clone positioned exactly where the grid card is */}
+          <div style={{
+            position: "absolute",
+            top: cardRect.top,
+            left: cardRect.left,
+            width: cardRect.width,
+            height: cardRect.height,
+            pointerEvents: "auto",
+            borderRadius: 20,
+            transition: "transform 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+            transform: "scale(1.01)",
+          }}>
+            <Suspense fallback={null}>
+              <Component {...widgetProps} widgetId={id} />
+            </Suspense>
+          </div>
+
+          {/* action panel — left or right side of card */}
+          <div
+            style={{
+              position: "absolute",
+              top: cardRect.top + 16,
+              ...(panelSide === "right"
+                ? { left: cardRect.left + cardRect.width + 12 }
+                : { left: cardRect.left - 12, transform: "translateX(-100%)" }),
+              pointerEvents: "auto",
+              display: "flex",
+              flexDirection: "column",
+              gap: 8,
+              animation: panelSide === "right"
+                ? "action-panel-in-right 0.25s cubic-bezier(0.4, 0, 0.2, 1) both"
+                : "action-panel-in-left 0.25s cubic-bezier(0.4, 0, 0.2, 1) both",
+            }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <button
+              onClick={() => setShowSources((s) => !s)}
+              style={{
+                ...actionBtnStyle,
+                background: showSources ? "rgba(91,110,175,0.12)" : actionBtnStyle.background,
+              }}
+              type="button"
+            >
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
+              </svg>
+              <span>Sources{chunkIds.length ? ` (${chunkIds.length})` : ""}</span>
+            </button>
+            <button onClick={handleDismiss} style={actionBtnStyle} type="button">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M18 6L6 18" /><path d="M6 6l12 12" />
+              </svg>
+              <span>Close</span>
+            </button>
+
+            {/* sources panel inline below buttons */}
+            {showSources && (
+              <div style={{ marginTop: 4, animation: "action-panel-in 0.2s ease both" }}>
+                <SourcesDropdown
+                  widgetName={displayName}
+                  chunkIds={chunkIds}
+                  onChunkClick={setViewingChunk}
+                  onClose={() => setShowSources(false)}
+                />
+              </div>
+            )}
+          </div>
+        </div>,
+        document.body,
+      )}
+
+      {/* chunk detail overlay */}
+      {viewingChunk !== null && (
+        <ChunkOverlay chunkId={viewingChunk} onClose={() => setViewingChunk(null)} />
+      )}
+    </>
+  );
+}
+
+/* ---------- sources dropdown panel ---------- */
+function SourcesDropdown({ widgetName, chunkIds, onChunkClick, onClose }: {
+  widgetName: string; chunkIds: number[]; onChunkClick: (id: number) => void; onClose: () => void;
 }) {
   return (
-    <div style={backFaceStyle}>
-      {/* header */}
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}>
+    <div style={sourcesDropdownStyle} onClick={(e) => e.stopPropagation()}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
         <div>
-          <div style={{ fontSize: 10, fontWeight: 500, letterSpacing: "0.12em", textTransform: "uppercase", color: "#C4899C", marginBottom: 4 }}>
+          <div style={{ fontSize: 9, fontWeight: 600, letterSpacing: "0.14em", textTransform: "uppercase", color: "#C4899C", marginBottom: 2 }}>
             Sources
           </div>
-          <div style={{ fontFamily: "'Playfair Display', Georgia, serif", fontSize: 15, fontWeight: 600, color: "#1a1a2e" }}>
+          <div style={{ fontFamily: "'Playfair Display', Georgia, serif", fontSize: 13, fontWeight: 600, color: "#1a1a2e" }}>
             {widgetName}
           </div>
         </div>
-        <button onClick={onFlip} style={flipBtnStyle} type="button" title="Back to widget">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#5B6EAF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+        <button onClick={onClose} style={flipBtnStyle} type="button" title="Close sources">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#5B6EAF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <path d="M18 6L6 18" /><path d="M6 6l12 12" />
           </svg>
         </button>
       </div>
-
       {chunkIds.length === 0 ? (
-        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
-          <p style={{ fontSize: 13, color: "rgba(64,56,82,0.45)", fontWeight: 400, fontStyle: "italic" }}>
-            Self-contained — no external sources
-          </p>
-        </div>
+        <p style={{ fontSize: 12, color: "rgba(64,56,82,0.45)", fontStyle: "italic", margin: 0 }}>
+          Self-contained — no external sources
+        </p>
       ) : (
         <>
-          <div style={{ fontSize: 12, color: "#7a7a8e", marginBottom: 14, fontWeight: 400 }}>
-            Based on {chunkIds.length} retrieved chunk{chunkIds.length > 1 ? "s" : ""} from the dream corpus
+          <div style={{ fontSize: 11, color: "#7a7a8e", marginBottom: 10 }}>
+            {chunkIds.length} chunk{chunkIds.length > 1 ? "s" : ""} from dream corpus
           </div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-            {chunkIds.map((id) => (
-              <button
-                key={id}
-                onClick={() => onChunkClick(id)}
-                type="button"
-                style={chunkPillStyle}
-              >
-                #{id}
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+            {chunkIds.map((cid) => (
+              <button key={cid} onClick={() => onChunkClick(cid)} type="button" style={chunkPillStyle}>
+                #{cid}
               </button>
             ))}
-          </div>
-          <div style={{ marginTop: 12, fontSize: 11, color: "rgba(64,56,82,0.35)", fontStyle: "italic" }}>
-            Click a chunk to view its source text
           </div>
         </>
       )}
@@ -234,51 +325,17 @@ function CitationBack({
   );
 }
 
-/* ---------- flippable card wrapper ---------- */
-function FlippableCard({ id, Component, props }: SpawnedWidget) {
-  const entry = widgetEntries.find((e) => e.config.id === id);
-  const [flipped, setFlipped] = useState(false);
-  const [viewingChunk, setViewingChunk] = useState<number | null>(null);
-  const toggle = useCallback(() => setFlipped((f) => !f), []);
-
-  const { source_chunk_ids, ...widgetProps } = props;
-  const chunkIds = parseChunkIds(source_chunk_ids);
-  const widgetName = entry?.config.tool?.name?.replace(/^show_/, "").replace(/_/g, " ") ?? id.replace(/_/g, " ");
-  const displayName = widgetName.charAt(0).toUpperCase() + widgetName.slice(1);
-
-  return (
-    <div className={layoutClasses(entry?.config.layout)} style={{ perspective: 1200 }}>
-      <div style={{
-        position: "relative",
-        width: "100%", height: "100%",
-        transformStyle: "preserve-3d",
-        transition: "transform 0.55s cubic-bezier(0.4, 0, 0.2, 1)",
-        transform: flipped ? "rotateY(180deg)" : "none",
-      }}>
-        {/* front */}
-        <div style={{ position: "relative", backfaceVisibility: "hidden", width: "100%", height: "100%" }}>
-          <Suspense fallback={<div className="animate-pulse h-32 rounded-[20px]" style={{ background: "rgba(238,234,255,0.3)" }} />}>
-            <Component {...widgetProps} widgetId={id} />
-          </Suspense>
-          {/* flip trigger */}
-          <button onClick={toggle} style={sourceTagStyle} type="button" title="View sources">
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
-            </svg>
-            <span>{chunkIds.length ? `${chunkIds.length} src` : "info"}</span>
-          </button>
-        </div>
-
-        {/* back */}
-        <CitationBack widgetName={displayName} chunkIds={chunkIds} onFlip={toggle} onChunkClick={setViewingChunk} />
-      </div>
-
-      {/* chunk detail overlay */}
-      {viewingChunk !== null && (
-        <ChunkOverlay chunkId={viewingChunk} onClose={() => setViewingChunk(null)} />
-      )}
-    </div>
-  );
+/* ---------- parse followup prompts (shared with dashboard) ---------- */
+function parseFollowupPrompts(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.filter(Boolean);
+  if (typeof raw === "string") {
+    const t = raw.trim();
+    if (!t || t === "[]") return [];
+    try { const p = JSON.parse(t); if (Array.isArray(p)) return p.filter(Boolean); } catch {}
+    try { const p = JSON.parse(t.replace(/'/g, '"')); if (Array.isArray(p)) return p.filter(Boolean); } catch {}
+    return t.split(",").map((s) => s.trim()).filter(Boolean);
+  }
+  return [];
 }
 
 /* ---------- main panel ---------- */
@@ -287,54 +344,103 @@ interface Props {
 }
 
 export function WidgetPanel({ spawned }: Props) {
-  const visible = useMemo(
-    () => spawned.filter((sw) => !isWidgetEmpty(sw.id, sw.props)),
-    [spawned],
-  );
+  const [focusedId, setFocusedId] = useState<string | null>(null);
+
+  // Separate followup_chat from grid widgets — it renders as tags above the input
+  const { gridWidgets, followupPrompts } = useMemo(() => {
+    const all = spawned.filter((sw) => !isWidgetEmpty(sw.id, sw.props));
+    const followup = all.find((sw) => sw.id === "followup_chat");
+    return {
+      gridWidgets: all.filter((sw) => sw.id !== "followup_chat"),
+      followupPrompts: followup ? parseFollowupPrompts(followup.props.prompts) : [],
+    };
+  }, [spawned]);
+
+  const dismissFocus = useCallback(() => setFocusedId(null), []);
 
   return (
-    <div className="grid grid-cols-3 gap-3 h-full auto-rows-min">
-      {visible.map((sw) => (
-        <FlippableCard key={sw.id} {...sw} />
-      ))}
-    </div>
+    <>
+      {/* keyframes for action panel */}
+      <style>{`
+        @keyframes action-panel-in-right {
+          from { opacity: 0; transform: translateX(-8px) scale(0.96); }
+          to { opacity: 1; transform: translateX(0) scale(1); }
+        }
+        @keyframes action-panel-in-left {
+          from { opacity: 0; transform: translateX(calc(-100% + 8px)) scale(0.96); }
+          to { opacity: 1; transform: translateX(-100%) scale(1); }
+        }
+      `}</style>
+      {/* backdrop — dims everything except focused card */}
+      {focusedId && createPortal(
+        <div style={focusBackdropStyle} onClick={dismissFocus} />,
+        document.body,
+      )}
+      <div className="grid grid-cols-6 gap-5 h-full auto-rows-min" style={{ gridAutoFlow: "dense" }}>
+        {gridWidgets.map((sw) => (
+          <FocusableCard
+            key={sw.id}
+            {...sw}
+            isFocused={focusedId === sw.id}
+            onFocus={() => setFocusedId(sw.id)}
+            onDismiss={dismissFocus}
+          />
+        ))}
+      </div>
+    </>
   );
 }
 
+/** Expose followup prompts for the dashboard to render above the input */
+export function useFollowupPrompts(spawned: SpawnedWidget[]): string[] {
+  return useMemo(() => {
+    const f = spawned.find((sw) => sw.id === "followup_chat");
+    return f ? parseFollowupPrompts(f.props.prompts) : [];
+  }, [spawned]);
+}
+
 /* ---------- styles ---------- */
-const sourceTagStyle: React.CSSProperties = {
-  position: "absolute", bottom: 10, right: 10,
-  display: "flex", alignItems: "center", gap: 4,
-  fontSize: 10, fontWeight: 500, color: "#5B6EAF",
-  background: "rgba(255,255,255,0.7)",
-  backdropFilter: "blur(8px)",
-  border: "1px solid rgba(91,110,175,0.15)",
-  borderRadius: 99, padding: "3px 9px",
-  cursor: "pointer", zIndex: 2,
+const focusBackdropStyle: React.CSSProperties = {
+  position: "fixed", inset: 0, zIndex: 90,
+  background: "rgba(26, 26, 46, 0.25)",
+  backdropFilter: "blur(3px)",
+  WebkitBackdropFilter: "blur(3px)",
+  transition: "opacity 0.3s ease",
+};
+
+const actionBtnStyle: React.CSSProperties = {
+  display: "flex", alignItems: "center", gap: 8,
+  fontSize: 13, fontWeight: 500, color: "#5B6EAF",
+  background: "rgba(255,255,255,0.88)",
+  backdropFilter: "blur(18px)",
+  WebkitBackdropFilter: "blur(18px)",
+  border: "1px solid rgba(91,110,175,0.18)",
+  borderRadius: 14, padding: "10px 16px",
+  cursor: "pointer",
+  boxShadow: "0 6px 20px rgba(91,110,175,0.12)",
+  whiteSpace: "nowrap",
+  transition: "all 0.15s ease",
+  minWidth: 130,
+};
+
+const sourcesDropdownStyle: React.CSSProperties = {
+  width: 220,
+  background: "rgba(255,255,255,0.9)",
+  backdropFilter: "blur(20px)",
+  WebkitBackdropFilter: "blur(20px)",
+  borderRadius: 16,
+  border: "1px solid rgba(255,255,255,0.8)",
+  boxShadow: "0 12px 40px rgba(91,110,175,0.14), 0 1px 0 rgba(255,255,255,0.8) inset",
+  padding: "16px 18px",
+  fontFamily: "'DM Sans', system-ui, sans-serif",
 };
 
 const flipBtnStyle: React.CSSProperties = {
   display: "flex", alignItems: "center", justifyContent: "center",
-  width: 30, height: 30, borderRadius: 10,
+  width: 26, height: 26, borderRadius: 8,
   background: "rgba(238,234,255,0.4)",
   border: "1px solid rgba(91,110,175,0.12)",
   cursor: "pointer",
-};
-
-const backFaceStyle: React.CSSProperties = {
-  position: "absolute", inset: 0,
-  backfaceVisibility: "hidden",
-  transform: "rotateY(180deg)",
-  background: "rgba(255,255,255,0.72)",
-  backdropFilter: "blur(18px)",
-  WebkitBackdropFilter: "blur(18px)",
-  borderRadius: 20,
-  border: "1px solid rgba(255,255,255,0.75)",
-  boxShadow: "0 4px 24px rgba(91,110,175,0.08), 0 1px 0 rgba(255,255,255,0.8) inset",
-  padding: "24px 26px",
-  display: "flex", flexDirection: "column",
-  fontFamily: "'DM Sans', system-ui, sans-serif",
-  overflow: "hidden",
 };
 
 const chunkPillStyle: React.CSSProperties = {

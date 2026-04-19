@@ -5,7 +5,7 @@ const config: WidgetConfig = {
   tool: {
     name: "show_emotion_split",
     description:
-      "Show two donut charts comparing emotion distribution for a specific dream symbol vs overall emotion distribution. [Layout: third width, medium height]",
+      "Show horizontal bar charts comparing emotion distribution for a specific dream symbol vs overall emotion distribution. Instant visual comparison. [Layout: third width, medium height]",
     parameters: {
       symbol:           { type: "string", description: "The symbol being compared, e.g. 'Water'" },
       symbol_emotions:  { type: "array",  description: "Array of {label: string, value: number} emotions for this symbol" },

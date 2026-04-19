@@ -1,91 +1,164 @@
 const FONTS = `
-  @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;600&family=DM+Sans:wght@300;400;500&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@400;600&family=DM+Sans:wght@300;400;500;600&display=swap');
 `;
 
-const PALETTE = ["#5B6EAF", "#7BB89A", "#C4899C", "#D4A853", "#7B68C8", "#8BBCCC"];
+const EMOTION_COLORS: Record<string, string> = {
+  anxiety: "#c4899c",
+  joy:     "#c9a55a",
+  sadness: "#6b5fa5",
+  anger:   "#d47a6b",
+  fear:    "#8b7fb8",
+  peace:   "#7d9a6e",
+  wonder:  "#5b9dad",
+  calm:    "#7d9a6e",
+  awe:     "#5b9dad",
+  nostalgia: "#8b7fb8",
+  urgency: "#d47a6b",
+};
+
+const FALLBACK_COLORS = ["#c4899c", "#c9a55a", "#6b5fa5", "#d47a6b", "#8b7fb8", "#7d9a6e", "#5b9dad"];
 
 interface Slice { label: string; value: number }
-interface Props { symbol: string; symbol_emotions: Slice[]; overall_emotions: Slice[] }
+interface Props { symbol: string; symbol_emotions: Slice[] | string; overall_emotions: Slice[] | string }
 
-function buildArcs(slices: Slice[], cx: number, cy: number, r: number, gap = 0.04) {
-  const total = slices.reduce((s, x) => s + x.value, 0);
-  let angle = -Math.PI / 2;
-  return slices.map((sl, i) => {
-    const sweep = (sl.value / total) * (Math.PI * 2) - gap;
-    const x1 = cx + r * Math.cos(angle);
-    const y1 = cy + r * Math.sin(angle);
-    const x2 = cx + r * Math.cos(angle + sweep);
-    const y2 = cy + r * Math.sin(angle + sweep);
-    const large = sweep > Math.PI ? 1 : 0;
-    const d = `M ${x1} ${y1} A ${r} ${r} 0 ${large} 1 ${x2} ${y2}`;
-    angle += sweep + gap;
-    return { ...sl, d, color: PALETTE[i % PALETTE.length] };
-  });
+function parseSlices(raw: unknown): Slice[] {
+  if (Array.isArray(raw)) return raw;
+  if (typeof raw === "string") {
+    try { return JSON.parse(raw.replace(/'/g, '"')); } catch { return []; }
+  }
+  return [];
 }
 
-function Donut({ slices, cx, cy, r, label }: { slices: Slice[]; cx: number; cy: number; r: number; label: string }) {
-  const arcs = buildArcs(slices, cx, cy, r);
-  const innerR = r * 0.62;
+function getColor(label: string, index: number): string {
+  return EMOTION_COLORS[label.toLowerCase()] ?? FALLBACK_COLORS[index % FALLBACK_COLORS.length];
+}
+
+const container: React.CSSProperties = {
+  width: "100%",
+  height: "100%",
+  background: "rgba(255,255,255,0.55)",
+  backdropFilter: "blur(18px)",
+  WebkitBackdropFilter: "blur(18px)",
+  borderRadius: 22,
+  border: "1px solid rgba(255,255,255,0.65)",
+  boxShadow: "0 2px 20px rgba(80,68,100,0.05), inset 0 1px 0 rgba(255,255,255,0.7)",
+  padding: "24px 26px",
+  display: "flex",
+  flexDirection: "column" as const,
+  fontFamily: "'DM Sans', system-ui, sans-serif",
+  overflow: "hidden",
+};
+
+function BarRow({ label, value, maxValue, color }: { label: string; value: number; maxValue: number; color: string }) {
+  const pct = maxValue > 0 ? (value / maxValue) * 100 : 0;
   return (
-    <g>
-      <circle cx={cx} cy={cy} r={r} fill="none" stroke="rgba(238,234,255,0.5)" strokeWidth={r - innerR} />
-      {arcs.map((arc) => (
-        <path key={arc.label} d={arc.d} fill="none" stroke={arc.color} strokeWidth={r - innerR} strokeLinecap="round" opacity={0.88} />
-      ))}
-      <text x={cx} y={cy - 4} textAnchor="middle" dominantBaseline="middle"
-        fontFamily="'Playfair Display', Georgia, serif" fontSize={9} fontWeight={600} fill="#1a1a2e">
-        {label.split(" ").map((word, i) => (
-          <tspan key={i} x={cx} dy={i === 0 ? 0 : 11}>{word}</tspan>
-        ))}
-      </text>
-    </g>
+    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+      <div style={{
+        width: 64, fontSize: 11, color: "#524a65", fontWeight: 400,
+        textAlign: "right" as const, flexShrink: 0,
+        overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const,
+      }}>
+        {label}
+      </div>
+      <div style={{
+        flex: 1, height: 14, background: "rgba(155,143,184,0.08)",
+        borderRadius: 7, overflow: "hidden",
+      }}>
+        <div style={{
+          height: "100%", width: `${pct}%`, background: color,
+          borderRadius: 7, opacity: 0.75,
+          transition: "width 0.4s ease",
+        }} />
+      </div>
+      <div style={{
+        width: 32, fontSize: 11, color: "#8a7fa0", fontWeight: 500,
+        textAlign: "right" as const, flexShrink: 0,
+      }}>
+        {Math.round(value)}%
+      </div>
+    </div>
   );
 }
 
-export default function EmotionSplit({ symbol, symbol_emotions, overall_emotions }: Props) {
-  const legendSlices = symbol_emotions.map((sl, i) => ({ ...sl, color: PALETTE[i % PALETTE.length] }));
+export default function EmotionSplit({ symbol, symbol_emotions: rawSymbol, overall_emotions: rawOverall }: Props) {
+  const symbolEmotions = parseSlices(rawSymbol);
+  const overallEmotions = parseSlices(rawOverall);
+
+  if (!symbolEmotions.length && !overallEmotions.length) return null;
+
+  // Find max value for consistent bar scaling across both columns
+  const allValues = [...symbolEmotions.map(s => s.value), ...overallEmotions.map(s => s.value)];
+  const maxVal = Math.max(...allValues, 1);
 
   return (
-    <div style={{
-      width: "100%",
-      height: "100%",
-      background: "rgba(255,255,255,0.60)",
-      backdropFilter: "blur(16px)",
-      WebkitBackdropFilter: "blur(16px)",
-      borderRadius: 20,
-      border: "1px solid rgba(255,255,255,0.75)",
-      boxShadow: "0 4px 24px rgba(91,110,175,0.08), 0 1px 0 rgba(255,255,255,0.8) inset",
-      padding: "20px 22px",
-      display: "flex",
-      flexDirection: "column",
-      fontFamily: "'DM Sans', system-ui, sans-serif",
-      overflow: "hidden",
-    }}>
+    <div style={container}>
       <style>{FONTS}</style>
 
-      <div style={{ marginBottom: 12 }}>
-        <div style={{ fontSize: 10, fontWeight: 500, letterSpacing: "0.12em", textTransform: "uppercase", color: "#C4899C", marginBottom: 3 }}>
-          Emotion Split
-        </div>
-        <div style={{ fontFamily: "'Playfair Display', Georgia, serif", fontSize: 15, fontWeight: 600, color: "#1a1a2e" }}>
-          {symbol} vs. all dreams
-        </div>
+      {/* Question label */}
+      <div style={{
+        fontSize: 10, fontWeight: 600, letterSpacing: "0.14em",
+        textTransform: "uppercase" as const, color: "#9b8fb8", marginBottom: 10,
+      }}>
+        What emotions does this symbol carry?
       </div>
 
-      <div style={{ flex: 1, minHeight: 0 }}>
-        <svg viewBox="0 0 240 160" width="100%" height="100%">
-          <Donut slices={symbol_emotions}  cx={68}  cy={80} r={52} label={`${symbol} dreams`} />
-          <Donut slices={overall_emotions} cx={176} cy={80} r={52} label="All dreams" />
-        </svg>
+      {/* Section title */}
+      <div style={{
+        fontFamily: "'Cormorant Garamond', Georgia, serif",
+        fontSize: 20, fontWeight: 600, color: "#2d2640",
+        lineHeight: 1.2, marginBottom: 14,
+      }}>
+        {symbol}
       </div>
 
-      <div style={{ display: "flex", flexWrap: "wrap", gap: "6px 14px", marginTop: 8 }}>
-        {legendSlices.map((sl) => (
-          <div key={sl.label} style={{ display: "flex", alignItems: "center", gap: 5 }}>
-            <div style={{ width: 8, height: 8, borderRadius: "50%", background: sl.color, flexShrink: 0 }} />
-            <span style={{ fontSize: 11, color: "#6a6a7a" }}>{sl.label}</span>
+      {/* Two-column bar comparison */}
+      <div style={{
+        flex: 1, minHeight: 0, display: "flex", gap: 20,
+        overflowY: "auto" as const,
+      }}>
+        {/* Left column: This symbol */}
+        <div style={{ flex: 1 }}>
+          <div style={{
+            fontSize: 11, fontWeight: 600, color: "#2d2640",
+            marginBottom: 10, letterSpacing: "0.02em",
+          }}>
+            This symbol
           </div>
-        ))}
+          {symbolEmotions.map((sl, i) => (
+            <BarRow
+              key={sl.label}
+              label={sl.label}
+              value={sl.value}
+              maxValue={maxVal}
+              color={getColor(sl.label, i)}
+            />
+          ))}
+        </div>
+
+        {/* Divider */}
+        <div style={{
+          width: 1, background: "rgba(155,143,184,0.15)",
+          alignSelf: "stretch" as const, flexShrink: 0,
+        }} />
+
+        {/* Right column: All your dreams */}
+        <div style={{ flex: 1 }}>
+          <div style={{
+            fontSize: 11, fontWeight: 600, color: "#2d2640",
+            marginBottom: 10, letterSpacing: "0.02em",
+          }}>
+            All your dreams
+          </div>
+          {overallEmotions.map((sl, i) => (
+            <BarRow
+              key={sl.label}
+              label={sl.label}
+              value={sl.value}
+              maxValue={maxVal}
+              color={getColor(sl.label, i)}
+            />
+          ))}
+        </div>
       </div>
     </div>
   );

@@ -6,92 +6,154 @@ interface Props {
   life_echo: string;
 }
 
-export default function CurrentDream({ title, quote, meaning, subconscious_emotion, life_echo }: Props) {
+const container: React.CSSProperties = {
+  width: "100%",
+  height: "100%",
+  background: "rgba(255,255,255,0.55)",
+  backdropFilter: "blur(18px)",
+  WebkitBackdropFilter: "blur(18px)",
+  borderRadius: 22,
+  border: "1px solid rgba(255,255,255,0.65)",
+  boxShadow:
+    "0 2px 20px rgba(80,68,100,0.05), inset 0 1px 0 rgba(255,255,255,0.7)",
+  padding: "24px 26px",
+  display: "flex",
+  flexDirection: "column" as const,
+  fontFamily: "'DM Sans', system-ui, sans-serif",
+  overflow: "hidden",
+};
+
+const questionLabel: React.CSSProperties = {
+  fontSize: 10,
+  fontWeight: 600,
+  letterSpacing: "0.14em",
+  textTransform: "uppercase",
+  color: "#9b8fb8",
+  marginBottom: 10,
+};
+
+const titleStyle: React.CSSProperties = {
+  fontFamily: "'Cormorant Garamond', Georgia, serif",
+  fontSize: 20,
+  fontWeight: 600,
+  color: "#2d2640",
+  lineHeight: 1.2,
+  marginBottom: 14,
+};
+
+const quoteBlock: React.CSSProperties = {
+  borderLeft: "2px solid rgba(107,95,165,0.2)",
+  padding: "12px 16px",
+  fontSize: 13,
+  lineHeight: 1.7,
+  color: "#524a65",
+  fontWeight: 400,
+  fontStyle: "italic",
+  background: "rgba(107,95,165,0.04)",
+  borderRadius: "0 10px 10px 0",
+  marginBottom: 18,
+};
+
+const interpretationStyle: React.CSSProperties = {
+  fontSize: 13,
+  lineHeight: 1.7,
+  color: "#524a65",
+  fontWeight: 400,
+  marginBottom: 20,
+  flex: 1,
+};
+
+const accentRow: React.CSSProperties = {
+  display: "flex",
+  gap: 16,
+  marginTop: "auto",
+};
+
+const accentCard: React.CSSProperties = {
+  flex: 1,
+  padding: "10px 12px",
+  background: "rgba(255,255,255,0.5)",
+  borderRadius: 10,
+  border: "1px solid rgba(255,255,255,0.6)",
+};
+
+const accentLabel: React.CSSProperties = {
+  fontSize: 10,
+  fontWeight: 600,
+  letterSpacing: "0.08em",
+  textTransform: "uppercase" as const,
+  marginBottom: 4,
+  display: "flex",
+  alignItems: "center",
+  gap: 5,
+};
+
+const accentText: React.CSSProperties = {
+  fontSize: 12,
+  lineHeight: 1.55,
+  color: "#524a65",
+  fontWeight: 400,
+};
+
+export default function CurrentDream({
+  title,
+  quote,
+  meaning,
+  subconscious_emotion,
+  life_echo,
+}: Props) {
   if (!meaning && !title) return null;
-  const panels = [
-    { title: "Meaning",              text: meaning },
-    { title: "Subconscious Emotion", text: subconscious_emotion },
-    { title: "Life Echo",            text: life_echo },
-  ];
 
   return (
-    <div
-      style={{
-        width: "100%",
-        height: "100%",
-        background: "rgba(255,255,255,0.60)",
-        backdropFilter: "blur(16px)",
-        WebkitBackdropFilter: "blur(16px)",
-        borderRadius: 20,
-        border: "1px solid rgba(255,255,255,0.75)",
-        boxShadow:
-          "0 4px 24px rgba(91,110,175,0.08), 0 1px 0 rgba(255,255,255,0.8) inset",
-        padding: "24px 26px",
-        display: "flex",
-        flexDirection: "column",
-        fontFamily: "'DM Sans', system-ui, sans-serif",
-        overflow: "hidden",
-      }}
-    >
-      <div style={{
-        fontSize: 10,
-        fontWeight: 500,
-        letterSpacing: "0.12em",
-        textTransform: "uppercase",
-        color: "#5B6EAF",
-        marginBottom: 8,
-      }}>
-        Current Dream
-      </div>
+    <div style={container}>
+      <div style={questionLabel}>What does this dream mean?</div>
 
-      <div style={{
-        fontFamily: "'Playfair Display', Georgia, serif",
-        fontSize: 22,
-        fontWeight: 700,
-        color: "#1a1a2e",
-        lineHeight: 1.25,
-        marginBottom: 16,
-      }}>
-        {title}
-      </div>
+      <div style={titleStyle}>{title}</div>
 
-      <div style={{
-        background: "rgba(238,234,255,0.35)",
-        borderRadius: 14,
-        padding: "16px 18px",
-        fontSize: 13,
-        lineHeight: 1.65,
-        color: "#4a4a5e",
-        fontWeight: 300,
-        marginBottom: 20,
-        borderLeft: "3px solid rgba(91,110,175,0.25)",
-      }}>
-        {quote}
-      </div>
+      {quote && <div style={quoteBlock}>{quote}</div>}
 
-      <div style={{ display: "flex", gap: 12, flex: 1, minHeight: 0 }}>
-        {panels.map((p) => (
-          <div
-            key={p.title}
-            style={{
-              flex: 1,
-              background: "rgba(255,255,255,0.55)",
-              borderRadius: 12,
-              padding: "14px 14px",
-              display: "flex",
-              flexDirection: "column",
-              border: "1px solid rgba(255,255,255,0.7)",
-            }}
-          >
-            <div style={{ fontSize: 11, fontWeight: 500, color: "#5B6EAF", marginBottom: 6 }}>
-              {p.title}
+      {meaning && <div style={interpretationStyle}>{meaning}</div>}
+
+      {(subconscious_emotion || life_echo) && (
+        <div style={accentRow}>
+          {subconscious_emotion && (
+            <div style={accentCard}>
+              <div style={{ ...accentLabel, color: "#c4899c" }}>
+                <span
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: "50%",
+                    background: "#c4899c",
+                    display: "inline-block",
+                    flexShrink: 0,
+                  }}
+                />
+                Emotional undercurrent
+              </div>
+              <div style={accentText}>{subconscious_emotion}</div>
             </div>
-            <div style={{ fontSize: 12, lineHeight: 1.55, color: "#5a5a6e", fontWeight: 300 }}>
-              {p.text}
+          )}
+          {life_echo && (
+            <div style={accentCard}>
+              <div style={{ ...accentLabel, color: "#c9a55a" }}>
+                <span
+                  style={{
+                    width: 6,
+                    height: 6,
+                    borderRadius: "50%",
+                    background: "#c9a55a",
+                    display: "inline-block",
+                    flexShrink: 0,
+                  }}
+                />
+                Life connection
+              </div>
+              <div style={accentText}>{life_echo}</div>
             </div>
-          </div>
-        ))}
-      </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

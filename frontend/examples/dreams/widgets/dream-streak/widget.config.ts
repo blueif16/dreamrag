@@ -5,10 +5,17 @@ const config: WidgetConfig = {
   tool: {
     name: "show_dream_streak",
     description:
-      "Show a streak stat card indicating how many consecutive days dreams have been recorded. [Layout: third width, compact height]",
+      "Show a journal rhythm card with streak count and 7-day recording indicator. [Layout: third width, compact height]",
     parameters: {
-      streak: { type: "number", description: "Current consecutive day streak, e.g. 27" },
-      last7:  { type: "array",  description: "Array of 7 booleans (most recent last), true=recorded, false=missed" },
+      streak: {
+        type: "number",
+        description: "Current consecutive day streak, e.g. 27",
+      },
+      last7: {
+        type: "array",
+        description:
+          "Array of 7 booleans (most recent last), true=recorded, false=missed",
+      },
     },
   },
   agent: null,

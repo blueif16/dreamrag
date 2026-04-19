@@ -5,7 +5,7 @@ const config: WidgetConfig = {
   tool: {
     name: "show_textbook_card",
     description:
-      "Show an authoritative textbook excerpt. excerpt must be a direct quote or close paraphrase from a dream_knowledge chunk — not invented. [Layout: third width, medium height]",
+      "Show an authoritative textbook excerpt styled as a literary blockquote. excerpt must be a direct quote or close paraphrase from a dream_knowledge chunk — not invented. [Layout: third width, medium height]",
     parameters: {
       symbol:           { type: "string", description: "The dream symbol name, e.g. 'Water'" },
       excerpt:          { type: "string", description: "Direct quote or close paraphrase from a retrieved dream_knowledge chunk" },

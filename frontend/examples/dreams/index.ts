@@ -19,8 +19,6 @@ export { default as emotionSplitConfig } from "./widgets/emotion-split/widget.co
 export { default as CurrentDream } from "./widgets/current-dream/CurrentDream";
 export { default as currentDreamConfig } from "./widgets/current-dream/widget.config";
 
-export { default as EmotionRadar } from "./widgets/emotion-radar/EmotionRadar";
-export { default as emotionRadarConfig } from "./widgets/emotion-radar/widget.config";
 
 export { default as RecurrenceCard } from "./widgets/recurrence-card/RecurrenceCard";
 export { default as recurrenceCardConfig } from "./widgets/recurrence-card/widget.config";
@@ -34,8 +32,6 @@ export { default as followupChatConfig } from "./widgets/followup-chat/widget.co
 export { default as EchoesCard } from "./widgets/echoes-card/EchoesCard";
 export { default as echoesCardConfig } from "./widgets/echoes-card/widget.config";
 
-export { default as SourcesPanel } from "./widgets/sources-panel/SourcesPanel";
-export { default as sourcesPanelConfig } from "./widgets/sources-panel/widget.config";
 
 export { default as HeatmapCalendar } from "./widgets/heatmap-calendar/HeatmapCalendar";
 export { default as heatmapCalendarConfig } from "./widgets/heatmap-calendar/widget.config";
@@ -43,11 +39,12 @@ export { default as heatmapCalendarConfig } from "./widgets/heatmap-calendar/wid
 export { default as EmotionalClimate } from "./widgets/emotional-climate/EmotionalClimate";
 export { default as emotionalClimateConfig } from "./widgets/emotional-climate/widget.config";
 
-export { default as LucidityGauge } from "./widgets/lucidity-gauge/LucidityGauge";
-export { default as lucidityGaugeConfig } from "./widgets/lucidity-gauge/widget.config";
 
 export { default as DreamStreak } from "./widgets/dream-streak/DreamStreak";
 export { default as dreamStreakConfig } from "./widgets/dream-streak/widget.config";
 
 export { default as TopSymbol } from "./widgets/top-symbol/TopSymbol";
 export { default as topSymbolConfig } from "./widgets/top-symbol/widget.config";
+
+export { default as TextResponse } from "./widgets/text-response/TextResponse";
+export { default as textResponseConfig } from "./widgets/text-response/widget.config";

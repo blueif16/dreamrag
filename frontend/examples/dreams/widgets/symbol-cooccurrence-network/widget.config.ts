@@ -5,7 +5,7 @@ const config: WidgetConfig = {
   tool: {
     name: "show_symbol_cooccurrence_network",
     description:
-      "Show a force-directed symbol co-occurrence bubble network graph. Central symbol node with connected symbols sized by edge weight. [Layout: full width, tall height]",
+      "Show a symbol co-occurrence network graph. Central symbol node with connected symbols sized by edge weight, plus a text summary of connections. [Layout: half width, tall height]",
     parameters: {
       center_symbol: { type: "string", description: "The central symbol, e.g. 'Water'" },
       nodes: {
@@ -15,7 +15,7 @@ const config: WidgetConfig = {
     },
   },
   agent: null,
-  layout: { width: "full", height: "tall" },
+  layout: { width: "half", height: "tall" },
 };
 
 export default config;

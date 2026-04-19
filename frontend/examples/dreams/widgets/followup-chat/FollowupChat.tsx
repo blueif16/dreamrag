@@ -1,78 +1,95 @@
 interface Props {
   dream_title: string;
-  prompts: string[];
+  prompts: string[] | string;
 }
 
-export default function FollowupChat({ dream_title, prompts }: Props) {
-  if (!prompts?.length) return null;
+function parsePrompts(raw: unknown): string[] {
+  if (Array.isArray(raw)) return raw.filter(Boolean);
+  if (typeof raw === "string") {
+    const t = raw.trim();
+    if (!t || t === "[]") return [];
+    try { const parsed = JSON.parse(t); if (Array.isArray(parsed)) return parsed.filter(Boolean); } catch {}
+    try { const parsed = JSON.parse(t.replace(/'/g, '"')); if (Array.isArray(parsed)) return parsed.filter(Boolean); } catch {}
+    return t.split(",").map((s) => s.trim()).filter(Boolean);
+  }
+  return [];
+}
+
+export default function FollowupChat({ dream_title, prompts: rawPrompts }: Props) {
+  const prompts = parsePrompts(rawPrompts);
+  if (!prompts.length) return null;
   return (
-    <div
-      style={{
-        width: "100%",
-        height: "100%",
-        background: "rgba(255,255,255,0.60)",
-        backdropFilter: "blur(16px)",
-        WebkitBackdropFilter: "blur(16px)",
-        borderRadius: 20,
-        border: "1px solid rgba(255,255,255,0.75)",
-        boxShadow: "0 4px 24px rgba(91,110,175,0.08), 0 1px 0 rgba(255,255,255,0.8) inset",
-        padding: "20px 20px 16px",
-        display: "flex",
-        flexDirection: "column",
-        fontFamily: "'DM Sans', system-ui, sans-serif",
-        overflow: "hidden",
-      }}
-    >
-      <div style={{ marginBottom: 14 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
-          <div style={{ fontSize: 11, color: "#7a7a8e", fontWeight: 400 }}>Talking about</div>
-          <div style={{
-            fontSize: 9, fontWeight: 500, letterSpacing: "0.08em", textTransform: "uppercase",
-            color: "#5B6EAF", background: "rgba(91,110,175,0.10)", padding: "3px 8px", borderRadius: 99,
-          }}>
-            Follow-up chat
-          </div>
-        </div>
-        <div style={{ fontSize: 12, color: "#5a5a6e", fontWeight: 400, marginBottom: 8 }}>
-          {dream_title}
-        </div>
-        <div style={{ fontFamily: "'Playfair Display', Georgia, serif", fontSize: 17, fontWeight: 700, color: "#1a1a2e" }}>
-          Stay with this dream.
-        </div>
+    <div style={containerStyle}>
+      <div style={{ marginBottom: 16 }}>
+        <div style={labelStyle}>What to explore next?</div>
+        <div style={titleStyle}>{dream_title}</div>
       </div>
 
-      <div style={{ flex: 1 }} />
-
-      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 12 }}>
+      <div style={gridStyle}>
         {prompts.map((p) => (
-          <div key={p} style={{
-            fontSize: 11, color: "#5B6EAF", background: "rgba(238,234,255,0.45)",
-            border: "1px solid rgba(91,110,175,0.15)", borderRadius: 99, padding: "5px 12px",
-            cursor: "pointer", fontWeight: 400,
-          }}>
+          <div key={p} style={promptStyle}>
             {p}
           </div>
         ))}
       </div>
-
-      <div style={{
-        display: "flex", alignItems: "center", gap: 8,
-        background: "rgba(255,255,255,0.6)", borderRadius: 12,
-        border: "1px solid rgba(91,110,175,0.12)", padding: "8px 12px",
-      }}>
-        <div style={{ flex: 1, fontSize: 12, color: "#aaa" }}>Ask about this dream...</div>
-        <div style={{
-          width: 28, height: 28, borderRadius: 8,
-          background: "linear-gradient(135deg, #5B6EAF, #7B68C8)",
-          display: "flex", alignItems: "center", justifyContent: "center",
-          cursor: "pointer", flexShrink: 0,
-        }}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="#fff" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <line x1="22" y1="2" x2="11" y2="13" />
-            <polygon points="22 2 15 22 11 13 2 9 22 2" />
-          </svg>
-        </div>
-      </div>
     </div>
   );
 }
+
+const containerStyle: React.CSSProperties = {
+  width: "100%",
+  height: "100%",
+  background: "rgba(255,255,255,0.60)",
+  backdropFilter: "blur(16px)",
+  WebkitBackdropFilter: "blur(16px)",
+  borderRadius: 20,
+  border: "1px solid rgba(255,255,255,0.75)",
+  boxShadow:
+    "0 4px 24px rgba(91,110,175,0.08), 0 1px 0 rgba(255,255,255,0.8) inset",
+  padding: "22px 24px 18px",
+  display: "flex",
+  flexDirection: "column",
+  fontFamily: "'DM Sans', system-ui, sans-serif",
+  overflow: "hidden",
+};
+
+const labelStyle: React.CSSProperties = {
+  fontSize: 10,
+  fontWeight: 600,
+  letterSpacing: "0.14em",
+  textTransform: "uppercase",
+  color: "#9b8fb8",
+  marginBottom: 8,
+};
+
+const titleStyle: React.CSSProperties = {
+  fontFamily: "'Cormorant Garamond', Georgia, serif",
+  fontSize: 18,
+  fontWeight: 500,
+  color: "#2d2640",
+  lineHeight: 1.3,
+};
+
+const gridStyle: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+  gap: 10,
+  alignItems: "stretch",
+};
+
+const promptStyle: React.CSSProperties = {
+  background: "rgba(107,95,165,0.06)",
+  border: "1px solid rgba(107,95,165,0.10)",
+  borderRadius: 12,
+  padding: "12px 16px",
+  fontSize: 12,
+  color: "#524a65",
+  cursor: "pointer",
+  fontFamily: "'DM Sans', system-ui, sans-serif",
+  fontWeight: 400,
+  lineHeight: 1.45,
+  display: "flex",
+  alignItems: "center",
+  minHeight: 64,
+  transition: "background 0.2s ease, border-color 0.2s ease",
+};

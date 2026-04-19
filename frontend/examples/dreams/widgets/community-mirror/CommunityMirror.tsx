@@ -1,19 +1,23 @@
 const FONTS = `
-  @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,600;1,400&family=DM+Sans:wght@300;400;500&display=swap');
+  @import url('https://fonts.googleapis.com/css2?family=Cormorant+Garamond:ital,wght@0,400;0,600;1,400&family=DM+Sans:wght@300;400;500;600&display=swap');
 `;
 
 const EMOTION_COLORS: Record<string, { bg: string; color: string }> = {
-  awe:       { bg: "#EEEAFF", color: "#5B6EAF" },
-  calm:      { bg: "#E8F5EE", color: "#4A8A65" },
-  wonder:    { bg: "#FFF4E0", color: "#D4A853" },
-  anxiety:   { bg: "#FDEEF3", color: "#C4899C" },
-  nostalgia: { bg: "#F3F0FF", color: "#7B68C8" },
-  peace:     { bg: "#E8F5EE", color: "#4A8A65" },
-  urgency:   { bg: "#FFF0F0", color: "#C46E6E" },
+  anxiety:   { bg: "rgba(196,137,156,0.12)", color: "#b07a8c" },
+  calm:      { bg: "rgba(125,154,110,0.12)", color: "#6d8a5e" },
+  wonder:    { bg: "rgba(201,165,90,0.12)",  color: "#a8904e" },
+  awe:       { bg: "rgba(107,95,165,0.12)",  color: "#6b5fa5" },
+  nostalgia: { bg: "rgba(107,95,165,0.12)",  color: "#7b6fb5" },
+  peace:     { bg: "rgba(125,154,110,0.12)", color: "#6d8a5e" },
+  urgency:   { bg: "rgba(212,122,107,0.12)", color: "#b06a5b" },
+  joy:       { bg: "rgba(201,165,90,0.12)",  color: "#a8904e" },
+  sadness:   { bg: "rgba(107,95,165,0.12)",  color: "#6b5fa5" },
+  fear:      { bg: "rgba(139,127,184,0.12)", color: "#8b7fb8" },
+  anger:     { bg: "rgba(212,122,107,0.12)", color: "#b06a5b" },
 };
 
 interface Snippet { text: string; emotions: string[]; similarity: number }
-interface Props { symbol: string; snippets: Snippet[] | string }
+interface Props { symbol: string; snippets: Snippet[] | string; source_chunk_ids?: string[] }
 
 function parseSnippets(raw: unknown): Snippet[] {
   if (Array.isArray(raw)) return raw;
@@ -23,71 +27,105 @@ function parseSnippets(raw: unknown): Snippet[] {
   return [];
 }
 
+function formatSimilarity(s: number): string {
+  const pct = s < 1 ? Math.round(s * 100) : Math.round(s);
+  return `${pct}% similar`;
+}
+
+const container: React.CSSProperties = {
+  width: "100%",
+  height: "100%",
+  background: "rgba(255,255,255,0.55)",
+  backdropFilter: "blur(18px)",
+  WebkitBackdropFilter: "blur(18px)",
+  borderRadius: 22,
+  border: "1px solid rgba(255,255,255,0.65)",
+  boxShadow: "0 2px 20px rgba(80,68,100,0.05), inset 0 1px 0 rgba(255,255,255,0.7)",
+  padding: "24px 26px",
+  display: "flex",
+  flexDirection: "column" as const,
+  fontFamily: "'DM Sans', system-ui, sans-serif",
+  overflow: "hidden",
+};
+
 export default function CommunityMirror({ symbol, snippets: rawSnippets }: Props) {
   const snippets = parseSnippets(rawSnippets);
   if (!snippets.length) return null;
+
   return (
-    <div
-      style={{
-        width: "100%",
-        height: "100%",
-        background: "rgba(255,255,255,0.60)",
-        backdropFilter: "blur(16px)",
-        WebkitBackdropFilter: "blur(16px)",
-        borderRadius: 20,
-        border: "1px solid rgba(255,255,255,0.75)",
-        boxShadow: "0 4px 24px rgba(91,110,175,0.08), 0 1px 0 rgba(255,255,255,0.8) inset",
-        padding: "24px 26px",
-        display: "flex",
-        flexDirection: "column",
-        gap: 0,
-        overflow: "hidden",
-        fontFamily: "'DM Sans', system-ui, sans-serif",
-      }}
-    >
+    <div style={container}>
       <style>{FONTS}</style>
 
-      <div style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 10, fontWeight: 500, letterSpacing: "0.12em", textTransform: "uppercase", color: "#C4899C", marginBottom: 4 }}>
-          Community Mirror
-        </div>
-        <div style={{ fontFamily: "'Playfair Display', Georgia, serif", fontSize: 16, fontWeight: 600, color: "#1a1a2e" }}>
-          Others who dreamed of {symbol}
-        </div>
+      {/* Question label */}
+      <div style={{
+        fontSize: 10, fontWeight: 600, letterSpacing: "0.14em",
+        textTransform: "uppercase" as const, color: "#9b8fb8", marginBottom: 10,
+      }}>
+        Who else dreams about this?
       </div>
 
-      <div style={{ display: "flex", flexDirection: "column", gap: 12, flex: 1, overflowY: "auto" }}>
-        {snippets.map((s, i) => (
+      {/* Header */}
+      <div style={{
+        fontFamily: "'Cormorant Garamond', Georgia, serif",
+        fontSize: 20, fontWeight: 600, color: "#2d2640",
+        lineHeight: 1.2, marginBottom: 14,
+      }}>
+        Others Dream of {symbol} Too
+      </div>
+
+      {/* Snippet cards */}
+      <div style={{
+        display: "flex", flexDirection: "column" as const, gap: 10,
+        flex: 1, overflowY: "auto" as const, minHeight: 0,
+      }}>
+        {snippets.slice(0, 4).map((s, i) => (
           <div key={i} style={{
-            background: "rgba(238,234,255,0.25)",
-            borderRadius: 12,
-            padding: "12px 14px",
-            border: "1px solid rgba(238,234,255,0.6)",
+            borderLeft: "3px solid #c4899c",
+            paddingLeft: 14,
+            paddingTop: 2,
+            paddingBottom: 2,
           }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
-              <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+            {/* Dream text */}
+            <p style={{
+              margin: 0, fontSize: 13, lineHeight: 1.7,
+              color: "#524a65", fontStyle: "italic",
+            }}>
+              {"\u201C"}{s.text}{"\u201D"}
+              <span style={{
+                fontSize: 11, color: "#8a7fa0", fontStyle: "normal",
+                marginLeft: 6,
+              }}>
+                {"\u00B7"} {formatSimilarity(s.similarity)}
+              </span>
+            </p>
+
+            {/* Emotion pills */}
+            {s.emotions && s.emotions.length > 0 && (
+              <div style={{ display: "flex", gap: 5, flexWrap: "wrap" as const, marginTop: 6 }}>
                 {s.emotions.map((e) => {
-                  const ec = EMOTION_COLORS[e.toLowerCase()] ?? { bg: "#f0f0f0", color: "#666" };
+                  const ec = EMOTION_COLORS[e.toLowerCase()] ?? { bg: "rgba(138,127,160,0.10)", color: "#8a7fa0" };
                   return (
                     <span key={e} style={{
-                      fontSize: 10, fontWeight: 500, padding: "2px 7px", borderRadius: 99,
-                      background: ec.bg, color: ec.color, letterSpacing: "0.04em",
+                      fontSize: 10, fontWeight: 500, padding: "2px 8px",
+                      borderRadius: 99, background: ec.bg, color: ec.color,
+                      letterSpacing: "0.03em",
                     }}>
                       {e}
                     </span>
                   );
                 })}
               </div>
-              <div style={{ fontSize: 11, fontWeight: 600, color: "#5B6EAF", background: "rgba(91,110,175,0.10)", padding: "2px 8px", borderRadius: 99 }}>
-                {s.similarity < 1 ? `${Math.round(s.similarity * 100)}%` : `${Math.round(s.similarity)}%`} match
-              </div>
-            </div>
-            <p style={{ margin: 0, fontSize: 12.5, lineHeight: 1.65, color: "#3a3a4a", fontStyle: "italic" }}>
-              &#8220;{s.text}&#8221;
-            </p>
-            <div style={{ marginTop: 6, fontSize: 10, color: "#aaa" }}>Anonymous · similar_to graph</div>
+            )}
           </div>
         ))}
+      </div>
+
+      {/* Footer */}
+      <div style={{
+        fontSize: 11, color: "#8a7fa0", marginTop: 12,
+        paddingTop: 10, borderTop: "1px solid rgba(155,143,184,0.12)",
+      }}>
+        From 86,000+ dreams in the community archive
       </div>
     </div>
   );

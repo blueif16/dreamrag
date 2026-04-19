@@ -1,57 +1,160 @@
 "use client";
 import { useEffect, useState } from "react";
 
-interface Metric { label: string; value: string; note: string }
+interface RecurrenceItem {
+  label: string;
+  value: string;
+  note: string;
+}
 
-const FALLBACK: Metric[] = [
-  { label: "no data yet", value: "—", note: "Record some dreams to see recurrence patterns." },
-];
+function parseCount(value: string): number {
+  const n = parseInt(value, 10);
+  return isNaN(n) ? 0 : n;
+}
+
+function parsePercent(note: string): string | null {
+  const match = note.match(/(\d+)%/);
+  return match ? match[1] + "%" : null;
+}
 
 export default function RecurrenceCard() {
-  const [metrics, setMetrics] = useState<Metric[]>([]);
+  const [items, setItems] = useState<RecurrenceItem[] | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     fetch("/api/user-profile?user_id=default")
       .then((r) => r.json())
-      .then((d) => setMetrics(d.recurrence?.length ? d.recurrence : FALLBACK))
-      .catch(() => setMetrics(FALLBACK))
+      .then((d) => {
+        if (Array.isArray(d.recurrence) && d.recurrence.length > 0) {
+          setItems(d.recurrence.slice(0, 5));
+        }
+      })
+      .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
 
+  if (!loading && !items) return null;
+
+  const container: React.CSSProperties = {
+    width: "100%",
+    height: "100%",
+    background: "rgba(255,255,255,0.55)",
+    backdropFilter: "blur(18px)",
+    WebkitBackdropFilter: "blur(18px)",
+    borderRadius: 22,
+    border: "1px solid rgba(255,255,255,0.65)",
+    boxShadow:
+      "0 2px 20px rgba(80,68,100,0.05), inset 0 1px 0 rgba(255,255,255,0.7)",
+    padding: "24px 26px",
+    display: "flex",
+    flexDirection: "column" as const,
+    fontFamily: "'DM Sans', system-ui, sans-serif",
+    overflow: "hidden",
+  };
+
+  const questionLabel: React.CSSProperties = {
+    fontSize: 10,
+    fontWeight: 600,
+    letterSpacing: "0.14em",
+    textTransform: "uppercase",
+    color: "#9b8fb8",
+    marginBottom: 10,
+  };
+
+  const maxCount = items
+    ? Math.max(...items.map((it) => parseCount(it.value)), 1)
+    : 1;
+
   return (
-    <div style={{
-      width: "100%", height: "100%",
-      background: "rgba(255,255,255,0.60)",
-      backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
-      borderRadius: 20, border: "1px solid rgba(255,255,255,0.75)",
-      boxShadow: "0 4px 24px rgba(91,110,175,0.08), 0 1px 0 rgba(255,255,255,0.8) inset",
-      padding: "20px 22px", display: "flex", flexDirection: "column", gap: 16,
-      fontFamily: "'DM Sans', system-ui, sans-serif", overflow: "hidden",
-    }}>
-      <div style={{ fontSize: 10, fontWeight: 500, letterSpacing: "0.12em", textTransform: "uppercase", color: "#5B6EAF" }}>
-        Recurrence
-      </div>
+    <div style={container}>
+      <div style={questionLabel}>What keeps coming back?</div>
 
       {loading ? (
-        <div style={{ color: "#9B8FC4", fontSize: 13 }}>Loading…</div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {[1, 2, 3].map((i) => (
+            <div
+              key={i}
+              style={{
+                height: 36,
+                borderRadius: 10,
+                background: "rgba(107,95,165,0.04)",
+              }}
+            />
+          ))}
+        </div>
       ) : (
-        metrics.map((m) => (
-          <div key={m.label} style={{
-            background: "rgba(238,234,255,0.3)", borderRadius: 14, padding: "16px 18px",
-            border: "1px solid rgba(255,255,255,0.6)",
-          }}>
-            <div style={{ fontSize: 11, fontWeight: 500, color: "#5B6EAF", textTransform: "lowercase", marginBottom: 4 }}>
-              {m.label}
-            </div>
-            <div style={{ fontFamily: "'Playfair Display', Georgia, serif", fontSize: 28, fontWeight: 700, color: "#1a1a2e", lineHeight: 1.1, marginBottom: 6 }}>
-              {m.value}
-            </div>
-            <div style={{ fontSize: 12, color: "#7a7a8e", lineHeight: 1.45, fontWeight: 300 }}>
-              {m.note}
-            </div>
-          </div>
-        ))
+        <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          {items!.map((item, i) => {
+            const count = parseCount(item.value);
+            const pct = parsePercent(item.note);
+            const dotCount = Math.min(
+              Math.max(Math.round((count / maxCount) * 5), 1),
+              5
+            );
+
+            return (
+              <div
+                key={item.label}
+                style={{
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 12,
+                  padding: "10px 14px",
+                  borderRadius: 12,
+                  background:
+                    i === 0 ? "rgba(107,95,165,0.06)" : "transparent",
+                }}
+              >
+                <span
+                  style={{
+                    fontSize: 14,
+                    fontWeight: 500,
+                    color: "#2d2640",
+                    flex: 1,
+                    textTransform: "capitalize",
+                  }}
+                >
+                  {item.label}
+                </span>
+
+                <div
+                  style={{
+                    display: "flex",
+                    gap: 3,
+                    alignItems: "center",
+                    marginRight: 12,
+                  }}
+                >
+                  {Array.from({ length: 5 }).map((_, di) => (
+                    <div
+                      key={di}
+                      style={{
+                        width: 5,
+                        height: 5,
+                        borderRadius: "50%",
+                        background:
+                          di < dotCount
+                            ? "#6b5fa5"
+                            : "rgba(107,95,165,0.12)",
+                      }}
+                    />
+                  ))}
+                </div>
+
+                <span
+                  style={{
+                    fontSize: 12,
+                    color: "#8a7fa0",
+                    fontVariantNumeric: "tabular-nums",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {count}&times;{pct ? ` \u00B7 ${pct} of dreams` : ""}
+                </span>
+              </div>
+            );
+          })}
+        </div>
       )}
     </div>
   );

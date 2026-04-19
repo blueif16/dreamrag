@@ -5,10 +5,14 @@ const config: WidgetConfig = {
   tool: {
     name: "show_heatmap_calendar",
     description:
-      "Show a GitHub-style heatmap calendar of dream recording frequency over the past month. [Layout: half width, compact height]",
+      "Show a heatmap calendar of dream recording frequency over the past month. [Layout: half width, compact height]",
     parameters: {
       month: { type: "string", description: "Month label, e.g. 'March'" },
-      data:  { type: "array",  description: "7-row x N-col 2D array of activity levels 0-4 (rows=days Mon-Sun, cols=weeks)" },
+      data: {
+        type: "array",
+        description:
+          "7-row x N-col 2D array of activity levels 0-4 (rows=days Mon-Sun, cols=weeks)",
+      },
     },
   },
   agent: null,

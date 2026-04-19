@@ -3,50 +3,119 @@ interface Props {
   last7: boolean[];
 }
 
+const DAY_LABELS = ["M", "T", "W", "T", "F", "S", "S"];
+
+function getMessage(streak: number): string {
+  if (streak >= 7) return "You\u2019re building a powerful habit";
+  if (streak >= 3) return "Keep the momentum going";
+  if (streak >= 1) return "Every dream recorded matters";
+  return "Start your streak tonight";
+}
+
 export default function DreamStreak({ streak, last7 }: Props) {
+  const safeStreak = typeof streak === "number" ? streak : 0;
+  const safeLast7 = Array.isArray(last7)
+    ? last7.slice(0, 7)
+    : Array(7).fill(false);
+
+  const container: React.CSSProperties = {
+    width: "100%",
+    height: "100%",
+    background: "rgba(255,255,255,0.55)",
+    backdropFilter: "blur(18px)",
+    WebkitBackdropFilter: "blur(18px)",
+    borderRadius: 22,
+    border: "1px solid rgba(255,255,255,0.65)",
+    boxShadow:
+      "0 2px 20px rgba(80,68,100,0.05), inset 0 1px 0 rgba(255,255,255,0.7)",
+    padding: "24px 26px",
+    display: "flex",
+    flexDirection: "column" as const,
+    fontFamily: "'DM Sans', system-ui, sans-serif",
+    overflow: "hidden",
+  };
+
+  const questionLabel: React.CSSProperties = {
+    fontSize: 10,
+    fontWeight: 600,
+    letterSpacing: "0.14em",
+    textTransform: "uppercase",
+    color: "#9b8fb8",
+    marginBottom: 10,
+  };
+
   return (
-    <div
-      style={{
-        width: "100%",
-        height: "100%",
-        background: "rgba(255,255,255,0.60)",
-        backdropFilter: "blur(16px)",
-        WebkitBackdropFilter: "blur(16px)",
-        borderRadius: 20,
-        border: "1px solid rgba(255,255,255,0.75)",
-        boxShadow: "0 4px 24px rgba(91,110,175,0.08), 0 1px 0 rgba(255,255,255,0.8) inset",
-        padding: "20px 22px",
-        display: "flex",
-        flexDirection: "column",
-        justifyContent: "space-between",
-        fontFamily: "'DM Sans', system-ui, sans-serif",
-      }}
-    >
-      <div style={{ fontSize: 10, fontWeight: 500, letterSpacing: "0.12em", textTransform: "uppercase", color: "#5B6EAF", marginBottom: 8 }}>
-        Dream Streak
-      </div>
+    <div style={container}>
+      <div style={questionLabel}>How consistent are you?</div>
 
       <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
-        <span style={{ fontFamily: "'Playfair Display', Georgia, serif", fontSize: 44, fontWeight: 700, color: "#1a1a2e", lineHeight: 1 }}>
-          {streak}
+        <span
+          style={{
+            fontFamily: "'Cormorant Garamond', Georgia, serif",
+            fontSize: 48,
+            fontWeight: 600,
+            color: "#2d2640",
+            lineHeight: 1,
+          }}
+        >
+          {safeStreak}
         </span>
-        <span style={{ fontSize: 16, color: "#7a7a8e", fontWeight: 400 }}>days</span>
+      </div>
+      <div
+        style={{
+          fontSize: 11,
+          color: "#8a7fa0",
+          marginTop: 2,
+          marginBottom: 16,
+        }}
+      >
+        days
       </div>
 
-      <div style={{ fontSize: 12, color: "#7a7a8e", marginTop: 4, lineHeight: 1.4 }}>
-        Recorded nearly every day.
+      <div>
+        <div style={{ display: "flex", gap: 4 }}>
+          {safeLast7.map((active: boolean, i: number) => (
+            <div
+              key={i}
+              style={{
+                width: 16,
+                height: 16,
+                borderRadius: 3,
+                background: active ? "#6b5fa5" : "transparent",
+                border: active
+                  ? "1px solid #6b5fa5"
+                  : "1px solid rgba(107,95,165,0.2)",
+              }}
+            />
+          ))}
+        </div>
+        <div style={{ display: "flex", gap: 4, marginTop: 3 }}>
+          {DAY_LABELS.map((label, i) => (
+            <div
+              key={i}
+              style={{
+                width: 16,
+                fontSize: 9,
+                color: "#8a7fa0",
+                textAlign: "center",
+              }}
+            >
+              {label}
+            </div>
+          ))}
+        </div>
       </div>
 
-      <div style={{ display: "flex", gap: 6, marginTop: 12 }}>
-        {last7.map((active, i) => (
-          <div key={i} style={{
-            width: 10,
-            height: 10,
-            borderRadius: "50%",
-            background: active ? "#5B6EAF" : "rgba(238,234,255,0.5)",
-            border: active ? "none" : "1px solid rgba(91,110,175,0.2)",
-          }} />
-        ))}
+      <div
+        style={{
+          fontSize: 13,
+          color: "#524a65",
+          lineHeight: 1.7,
+          marginTop: 14,
+          fontStyle: "italic",
+        }}
+      >
+        {getMessage(safeStreak)}
       </div>
     </div>
   );

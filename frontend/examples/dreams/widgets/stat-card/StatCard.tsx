@@ -1,7 +1,3 @@
-const FONTS = `
-  @import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700&family=DM+Sans:wght@300;400;500&display=swap');
-`;
-
 interface Props {
   label: string;
   personal: number;
@@ -9,107 +5,175 @@ interface Props {
   description: string;
 }
 
-export default function StatCard({ label, personal, baseline, description }: Props) {
-  const pct = Math.round(((personal - baseline) / baseline) * 100);
+export default function StatCard({
+  label,
+  personal,
+  baseline,
+  description,
+}: Props) {
+  const safePersnal = typeof personal === "number" ? personal : 0;
+  const safeBaseline = typeof baseline === "number" ? baseline : 0;
+  const diff = safePersnal - safeBaseline;
+  const absDiff = Math.abs(Math.round(diff));
+
+  let deviationText: string;
+  let deviationColor: string;
+
+  if (diff > 2) {
+    deviationText = `+${absDiff}% above average`;
+    deviationColor = "#7d9a6e";
+  } else if (diff < -2) {
+    deviationText = `${absDiff}% below average`;
+    deviationColor = "#c4899c";
+  } else {
+    deviationText = "Right at the average";
+    deviationColor = "#8a7fa0";
+  }
+
+  const container: React.CSSProperties = {
+    width: "100%",
+    height: "100%",
+    background: "rgba(255,255,255,0.55)",
+    backdropFilter: "blur(18px)",
+    WebkitBackdropFilter: "blur(18px)",
+    borderRadius: 22,
+    border: "1px solid rgba(255,255,255,0.65)",
+    boxShadow:
+      "0 2px 20px rgba(80,68,100,0.05), inset 0 1px 0 rgba(255,255,255,0.7)",
+    padding: "24px 26px",
+    display: "flex",
+    flexDirection: "column" as const,
+    fontFamily: "'DM Sans', system-ui, sans-serif",
+    overflow: "hidden",
+  };
+
+  const questionLabel: React.CSSProperties = {
+    fontSize: 10,
+    fontWeight: 600,
+    letterSpacing: "0.14em",
+    textTransform: "uppercase",
+    color: "#9b8fb8",
+    marginBottom: 10,
+  };
+
+  const barTrack: React.CSSProperties = {
+    width: "100%",
+    height: 8,
+    borderRadius: 4,
+    background: "rgba(107,95,165,0.06)",
+    overflow: "hidden",
+  };
 
   return (
-    <div
-      style={{
-        width: "100%",
-        height: "100%",
-        background: "rgba(255,255,255,0.60)",
-        backdropFilter: "blur(16px)",
-        WebkitBackdropFilter: "blur(16px)",
-        borderRadius: 20,
-        border: "1px solid rgba(255,255,255,0.75)",
-        boxShadow: "0 4px 24px rgba(91,110,175,0.08), 0 1px 0 rgba(255,255,255,0.8) inset",
-        padding: "20px 22px",
-        display: "flex",
-        flexDirection: "column",
-        justifyContent: "space-between",
-        fontFamily: "'DM Sans', system-ui, sans-serif",
-      }}
-    >
-      <style>{FONTS}</style>
+    <div style={container}>
+      <div style={questionLabel}>How do you compare?</div>
 
-      <div>
-        <div style={{
-          fontSize: 10,
-          fontWeight: 500,
-          letterSpacing: "0.12em",
-          textTransform: "uppercase",
-          color: "#5B6EAF",
-          marginBottom: 8,
-        }}>
-          {label}
-        </div>
+      <div
+        style={{
+          fontFamily: "'Cormorant Garamond', Georgia, serif",
+          fontSize: 20,
+          fontWeight: 600,
+          color: "#2d2640",
+          lineHeight: 1.2,
+          marginBottom: 16,
+        }}
+      >
+        {label}
+      </div>
 
-        <div style={{ display: "flex", alignItems: "baseline", gap: 4 }}>
-          <span style={{
-            fontFamily: "'Playfair Display', Georgia, serif",
-            fontSize: 44,
-            fontWeight: 700,
-            color: "#1a1a2e",
-            lineHeight: 1,
-          }}>
-            {personal}%
+      {/* You bar */}
+      <div style={{ marginBottom: 12 }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            marginBottom: 5,
+          }}
+        >
+          <span style={{ fontSize: 12, color: "#524a65", fontWeight: 500 }}>
+            You
           </span>
-          <span style={{
-            fontSize: 12,
-            color: "#5B6EAF",
-            fontWeight: 500,
-            background: "rgba(91,110,175,0.10)",
-            padding: "2px 7px",
-            borderRadius: 99,
-            marginLeft: 4,
-          }}>
-            {pct >= 0 ? "+" : ""}{pct}% vs norm
+          <span
+            style={{
+              fontSize: 12,
+              color: "#6b5fa5",
+              fontWeight: 600,
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            {safePersnal}%
           </span>
         </div>
-
-        <div style={{
-          fontSize: 12,
-          color: "#7a7a8e",
-          marginTop: 4,
-          lineHeight: 1.4,
-        }}>
-          {description}
+        <div style={barTrack}>
+          <div
+            style={{
+              width: `${Math.min(safePersnal, 100)}%`,
+              height: "100%",
+              borderRadius: 4,
+              background: "#6b5fa5",
+              opacity: 0.85,
+            }}
+          />
         </div>
       </div>
 
-      {/* Comparison bar */}
-      <div style={{ marginTop: 14 }}>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#aaa", marginBottom: 5 }}>
-          <span>You</span>
-          <span>DreamBank avg</span>
+      {/* Average bar */}
+      <div style={{ marginBottom: 14 }}>
+        <div
+          style={{
+            display: "flex",
+            justifyContent: "space-between",
+            marginBottom: 5,
+          }}
+        >
+          <span style={{ fontSize: 12, color: "#524a65", fontWeight: 500 }}>
+            Average
+          </span>
+          <span
+            style={{
+              fontSize: 12,
+              color: "#c4899c",
+              fontWeight: 600,
+              fontVariantNumeric: "tabular-nums",
+            }}
+          >
+            {safeBaseline}%
+          </span>
         </div>
-        <div style={{
-          height: 6,
-          background: "rgba(238,234,255,0.5)",
-          borderRadius: 99,
-          overflow: "hidden",
-          position: "relative",
-        }}>
-          <div style={{
-            position: "absolute",
-            left: 0, top: 0, bottom: 0,
-            width: `${Math.min(baseline, 100)}%`,
-            background: "rgba(196,137,156,0.35)",
-            borderRadius: 99,
-          }} />
-          <div style={{
-            position: "absolute",
-            left: 0, top: 0, bottom: 0,
-            width: `${Math.min(personal, 100)}%`,
-            background: "linear-gradient(90deg, #5B6EAF, #7B68C8)",
-            borderRadius: 99,
-            opacity: 0.85,
-          }} />
+        <div style={barTrack}>
+          <div
+            style={{
+              width: `${Math.min(safeBaseline, 100)}%`,
+              height: "100%",
+              borderRadius: 4,
+              background: "#c4899c",
+              opacity: 0.85,
+            }}
+          />
         </div>
-        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 10, color: "#aaa", marginTop: 4 }}>
-          <span style={{ color: "#5B6EAF", fontWeight: 500 }}>{personal}%</span>
-          <span>{baseline}%</span>
-        </div>
+      </div>
+
+      {/* Description */}
+      <div
+        style={{
+          fontSize: 13,
+          lineHeight: 1.7,
+          color: "#524a65",
+          marginBottom: 10,
+        }}
+      >
+        {description}
+      </div>
+
+      {/* Deviation badge */}
+      <div
+        style={{
+          fontSize: 12,
+          fontWeight: 600,
+          color: deviationColor,
+        }}
+      >
+        {deviationText}
       </div>
     </div>
   );

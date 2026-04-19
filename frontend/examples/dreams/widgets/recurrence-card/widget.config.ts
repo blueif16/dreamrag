@@ -5,11 +5,11 @@ const config: WidgetConfig = {
   tool: {
     name: "show_recurrence_card",
     description:
-      "Show symbol recurrence statistics from user's dream history. Self-contained — widget fetches user profile data directly from /api/user-profile. Call with NO parameters. [Layout: third width, medium height]",
+      "Show recurring dream symbols with frequency indicators. Self-contained — widget fetches user profile data directly from /api/user-profile. Call with NO parameters. [Layout: half width, medium height]",
     parameters: {},
   },
   agent: null,
-  layout: { width: "third", height: "medium" },
+  layout: { width: "half", height: "medium" },
 };
 
 export default config;
