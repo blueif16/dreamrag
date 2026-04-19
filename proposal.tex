@@ -1,0 +1,186 @@
+\documentclass[paper=a4, fontsize=11pt]{scrartcl}
+
+\newcommand{\assignment}{Project Proposal Template}
+\newcommand{\duedate}{March 30, 2026}
+\input{include/hw-template.tex}
+\author{
+    \textbf{Gin Fu, Shiran Wang} \\
+    \href{mailto:fu.jingyi2@northeastern.edu}{fu.jingyi2@northeastern.edu}, \href{mailto:wang.shira@northeastern.edu}{wang.shira@northeastern.edu} \\
+    \href{https://github.com/blueif16/dreamrag}{github.com/blueif16/dreamrag}
+}
+
+\begin{document}
+\maketitle
+
+\section{Proposed Objective}
+
+We propose DreamRAG, a retrieval-augmented dream-analysis system whose
+response to each query is a bento-grid dashboard rather than a text reply. A
+self-correcting LangGraph agent retrieves over three corpora---community
+narratives, dream-analysis literature, and the user's personal journal---
+fusing BM25 and pgvector scores with Reciprocal Rank Fusion (RRF;
+\href{https://doi.org/10.1145/1571941.1572114}{Cormack et al., 2009}) and
+expanding the seed set via a recursive-CTE walk over typed edges in a
+Supabase \texttt{doc\_relations} table. Results are routed to roughly a
+dozen widgets (interpretation synthesis, symbol graph, emotion radar,
+community mirror, heatmap, stat card) that consume raw chunks, SQL
+aggregates, or typed edges by modality, each carrying chunk-level
+provenance. Retrieval therefore determines both \emph{what} is shown and
+\emph{how} it is rendered.
+
+\section{Background and Motivation}
+
+\paragraph{Problem.}
+Dream journaling produces rich longitudinal text, but journalers,
+researchers, and clinicians lack scalable tools to connect private entries
+to the accepted interpretive frameworks---Jungian symbolism, Freudian
+latent-content analysis, the Hall/Van de Castle (HVdC) coding system, and
+Domhoff's continuity-hypothesis account---or to the much larger corpus of
+community dreams in public datasets. Current practice is manual symbol
+lookup and cross-referencing that does not scale.
+
+\paragraph{Why it is hard.}
+Single-pass RAG returns a flat top-$k$ list and cannot support multi-hop
+symbolic reasoning, cross-corpus triangulation, or temporal co-occurrence
+discovery inside a user's archive, and it lacks the provenance required
+when mixing clinical literature with personal data. The corpora also have
+heterogeneous register (informal journal, HVdC codes, academic prose) and
+pervasive symbolic indirection---``water'' should reach Jungian
+``unconscious'' through typed edges, not lexical overlap---across three
+namespaces, with every interpretation tagged back to the chunks that
+support it.
+
+\paragraph{Related literature.}
+Interpretive backbone: the Hall/Van de Castle manual
+(\href{https://dreams.ucsc.edu/Coding/}{dreams.ucsc.edu/Coding}), Jung,
+Freud, and Domhoff (MIT Press, 2018); NLP-scale precedent:
+\emph{Our Dreams, Our Selves} (2020) and the Reddit \texttt{r/Dreams}
+topic-model study
+(\href{https://doi.org/10.1140/epjds/s13688-025-00530-4}{Sanz et al., 2025}).
+Technical foundations: RRF (Cormack et al., 2009), HNSW
+(\href{https://arxiv.org/abs/1603.09320}{Malkov \& Yashunin, 2018}), and
+Qwen3-Embedding
+(\href{https://arxiv.org/abs/2506.05176}{Zhang et al., 2025}), whose
+instruction-prefixed queries we adopt.
+
+\paragraph{Data.}
+We restrict the community corpus to sources that ship with structured
+annotations so HVdC codes come from the source rather than an LLM.
+Table~\ref{tab:data} lists the two ingested community sources
+($\sim$48K annotated narratives), the textbook layer, and per-user
+Supabase entries. Unannotated variants (DreamBank/DReAMy-lib, SDDb,
+Reddit \texttt{r/Dreams}) are deferred pending a runtime auto-tagger.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}l l p{7.2cm}@{}}
+\hline
+Source & Scale & Annotations / notes \\
+\hline
+DreamBank Annotated & $\sim$28K reports & HVdC emotion + character codes (HF \texttt{gustavecortal/DreamBank-annotated}) \\
+Dryad HVdC-annotated & $\sim$20K reports & Full HVdC codes + numeric indices (\href{https://datadryad.org/dataset/doi:10.5061/dryad.qbzkh18fr}{Dryad 10.5061/dryad.qbzkh18fr}) \\
+Freud, Jung (Gutenberg) & textbook & Chunked at 1500/200 \\
+HVdC coding manual & reference & Scraped from \href{https://dreams.ucsc.edu/Coding/}{dreams.ucsc.edu/Coding} \\
+\hline
+\end{tabular}
+\caption{Ingested sources. Per-user Supabase entries are populated at runtime
+and auto-tagged only when source annotations are absent.}
+\label{tab:data}
+\end{table}
+
+\section{Proposed Approach / Implementation Details}
+
+\begin{itemize}
+  \item \textbf{Pre-processing.} Corpora are ingested through the
+  \texttt{RAGStore}/\texttt{DataAdapter} components of the Supabase RAG
+  scaffold. Academic texts chunk at 1500/200 tokens (1200/150 for the
+  scraped HVdC manual); dream narratives are stored at report level. HVdC
+  emotion, character, aggression, friendliness, and sexuality codes---plus
+  numeric HVdC indices on Dryad---are parsed from source CSV/TSV columns
+  into \texttt{metadata}, so bulk ingest needs no LLM tagging; a planned
+  4B-class Qwen tagger will cover user journal entries without source
+  annotations. Edges are extracted at ingest: in-archive symbol
+  co-occurrences strengthen on repetition, and cross-corpus
+  \texttt{similar\_to} edges link personal, community, and academic chunks.
+
+  \item \textbf{Retrieval algorithm.} Retrieval runs entirely in Supabase
+  Postgres through the scaffold's \emph{Context Mesh}. RRF first fuses BM25
+  and pgvector cosine scores over \texttt{vector(1024)} HNSW embeddings
+  into a seed set; a recursive-CTE walk over \texttt{doc\_relations} then
+  expands it along seven typed edges (\texttt{symbolizes},
+  \texttt{similar\_to}, \texttt{co\_occurs}, \texttt{follows},
+  \texttt{interprets}, \texttt{contradicts}, \texttt{coded\_as}). The pipeline is a self-correcting LangGraph:
+  \texttt{classify\_query} $\rightarrow$ \texttt{plan\_retrieval}
+  $\rightarrow$ \texttt{retrieve} $\rightarrow$ \texttt{grade}
+  $\rightarrow$ \texttt{rewrite\_retry} $\rightarrow$
+  \texttt{synthesize}.
+
+  \item \textbf{Widget composition.} The \texttt{synthesize} node emits
+  layout JSON mapping retrieval results onto $\sim$14 widget types, each
+  consuming a different slice: raw chunks (\emph{Interpretation Synthesis},
+  \emph{Textbook Card}), typed edges (\emph{Symbol Network} on
+  \texttt{co\_occurs}, \emph{Dream Timeline} on \texttt{follows},
+  \emph{Community Mirror} on cross-corpus \texttt{similar\_to}), or SQL
+  aggregates over \texttt{user\_dreams} (\emph{Heatmap}, \emph{Emotion
+  Radar}, \emph{Stat Card}). Composition rules keyed on query type
+  (symbol, temporal, similarity, new entry) pick the subset and grid size,
+  so the same query vocabulary yields structurally different dashboards.
+
+  \item \textbf{Robustness.} The \texttt{grade} node runs an LLM relevance
+  check that triggers query rewrite on failure, using a different model
+  family than the synthesizer to reduce self-preference bias. The three
+  namespaces (\texttt{community\_dreams}, \texttt{dream\_knowledge},
+  \texttt{user\_\{uid\}\_dreams}) are queried in isolation with
+  instruction-prefixed queries. Class imbalance---$\sim$48K community
+  reports vs.\ textbook layer vs.\ per-user archives (tens to
+  hundreds)---is handled by stratified per-namespace budgets and HVdC
+  frequency capping; graph over-fitting is controlled by normalizing
+  \texttt{co\_occurs} weights by user entry count and validating on a
+  held-out user split.
+
+  \item \textbf{Inference stack and scale.} All inference is local via
+  \texttt{llama.cpp} / \texttt{llama-server} on a GCP
+  \texttt{g2-standard-8} instance with an NVIDIA L4 (24\,GB VRAM); no cloud
+  APIs in the serving path. Chat runs
+  \texttt{unsloth/Qwen3.6-35B-A3B-GGUF:UD-IQ4\_XS} (17.7\,GB)---a MoE
+  activating $\sim$3B parameters per token, so throughput tracks a dense
+  3B rather than a 35B. IQ4\_XS matches Q4\_K\_M quality within noise
+  while saving $\sim$4.7\,GB over UD-Q4\_K\_XL; the freed headroom lets
+  the KV cache stay at \emph{fp16} (not q8\_0) for 32K context under
+  \texttt{parallel=1} ($\sim$3\,GB KV plus buffers/CUDA context, with
+  slack for a second slot). fp16 KV matters because q8\_0 KV degrades
+  long-context needle retrieval and tool-call argument fidelity---both
+  load-bearing for the graph-hop RAG and agent loop. A dense Qwen3.5-27B
+  @ Q4 ($\sim$16\,GB) is retained as a fallback. Embeddings use
+  Qwen3-Embedding-0.6B (Q8\_0, 1024-dim MRL, last-token pooling,
+  L2-normalized); MRL can drop query-time dimension to 768/512 if latency
+  binds. HNSW on \texttt{vector(1024)} plus GIN indexes on symbol/emotion
+  tag arrays support hybrid filtering; namespace-scoped queries bound
+  the recursive CTE.
+
+  \item \textbf{Validation.} Retrieval: Precision@5 and Recall@5 on 500
+  curated DreamBank similar-dream pairs (two labelers, adjudicated) across
+  four baselines---BM25, pgvector, RRF, RRF$+$graph---isolating the graph
+  layer. Interpretation: blinded 5-point Likert by three raters on a
+  held-out Dryad HVdC partition (excluded from graph training) with
+  Cohen's $\kappa$. Provenance: manual audit on 50 cards that linked
+  chunks support rendered content and graph-hop metadata is correct. User
+  study: two-week within-subjects journaling ($N{=}15$) comparing a static
+  dashboard against the composed layout on perceived insight,
+  pre-registered for $d{=}0.5$. We also report the share of synthesis
+  content from depth-$>$0 hops. Operating targets: $<$2\,s first token,
+  $<$50\,ms per embedding.
+
+  \item \textbf{Limitations.} Provenance ensures retrieval traceability
+  but not generator faithfulness, so a post-synthesis faithfulness check
+  runs against linked chunks. Cold-start users get seed-only layouts
+  until their archive reaches a minimum size. Low-bit MoE quantization
+  may degrade long-chain reasoning, probed by comparing UD-IQ4\_XS to a
+  higher-bit reference. All corpora are English and Western-theory-
+  dominated, limiting cross-cultural generalization. DreamRAG is a
+  research prototype, not a clinical tool, and renders disclaimers on
+  every interpretation card.
+\end{itemize}
+
+\end{document}

@@ -142,14 +142,14 @@ create index on user_dreams using gin (emotion_tags);
 |  +-------------+  +-------------+  +------------------------------+  |
 |  | Next.js 15  |  | FastAPI     |  | llama.cpp  (llama-server)    |  |
 |  | +CopilotKit |  | +LangGraph  |  |                              |  |
-|  | :3000       |  | :8123       |  |  :8081 -> qwen3.5-9b (chat)  |  |
+|  | :3000       |  | :8000       |  |  :8081 -> qwen3.6-35b-a3b    |  |
 |  +------+------+  +------+------+  |  :8082 -> qwen3-embed-0.6b   |  |
-|         | AG-UI          |         |  :8083 -> qwen3.5-4b (tag)   |  |
-|         +-------+--------+         +---------------+--------------+  |
-|                 | Supabase SDK                      | OpenAI-compat  |
-|                 v                                   | API            |
+|         | AG-UI          |         +---------------+--------------+  |
+|         +-------+--------+                         | OpenAI-compat  |
+|                 | Supabase SDK                     | API            |
+|                 v                                                    |
 |  +--------------------------------------------------------------+    |
-|  |  Supabase Postgres (hosted or self-hosted)                   |    |
+|  |  Supabase Postgres (hosted)                                  |    |
 |  |  documents (pgvector + BM25) | user_dreams                   |    |
 |  |  doc_relations (graph)       | checkpoints                   |    |
 |  +--------------------------------------------------------------+    |
@@ -158,66 +158,71 @@ create index on user_dreams using gin (emotion_tags);
 
 ### 3.3 Models (All Local via llama.cpp)
 
+Single chat model (MoE) + single embedding model, both containerised via llama.cpp's prebuilt CUDA image. Models are pulled from Hugging Face on first boot into a shared `hf-cache` volume, so there is no manual download step.
+
 | Role | Model | GGUF Quant | VRAM | Why |
 |------|-------|-----------|------|-----|
-| **Chat / Orchestration** | `qwen3.5-9b` | Q4_K_M (~5.5GB) | ~6GB | Latest Qwen family (Feb 2026). Hybrid architecture — Gated Delta Networks + sparse MoE. 262K native context. Outperforms GPT-OSS-120B on multiple benchmarks at 13x smaller. Handles classification, composition, synthesis. |
-| **Embeddings** | `qwen3-embedding-0.6b` | Q8_0 (~0.7GB) | ~1GB (or CPU) | SOTA MTEB scores for its class. Instruction-aware. MRL support — flexible dims 32-1024, we use 1024. 32K context. Decoder-only with last-token (EOS) pooling. Runs on CPU during ingestion to keep GPU free for chat. |
-| **Auto-tagging** | `qwen3.5-4b` | Q4_K_M (~2.5GB) | ~3GB | Lighter Qwen3.5 for batch HVdC annotation. Near-8B quality at half the size thanks to MoE architecture. JSON structured output. |
-| **Fallback (complex synthesis)** | `qwen3.5-35b-A3B` | Q4_K_M (~20GB) | ~22GB | MoE — only 3B params active per token, so fast despite 35B total. Swap in for multi-source synthesis when 9B struggles. Requires unloading other models. |
+| **Chat / Orchestration** | `unsloth/Qwen3.6-35B-A3B-GGUF` | `UD-IQ4_XS` (~17.7 GB) | ~20 GB w/ 32K fp16 KV | MoE — 35B total, ~3B active per token. IQ4_XS matches Q4_K_M quality within noise, costs ~4.7 GB less than UD-Q4_K_XL, and leaves headroom for fp16 KV + CUDA context. fp16 KV (not q8_0) preserves long-context needle retrieval and tool-call argument fidelity — critical for agentic RAG. |
+| **Embeddings** | `Qwen/Qwen3-Embedding-0.6B-GGUF` | `Q8_0` (~0.7 GB) | ~1 GB on GPU | SOTA MTEB for its class. Instruction-aware. MRL support — 1024 dims default, reducible to 768/512. Decoder-only with last-token (EOS) pooling. |
 
-**VRAM Budget (NVIDIA L4, 24GB):**
+**VRAM Budget (NVIDIA L4, 24 GB):**
 
-| Concurrent Config | Total VRAM | Headroom |
-|-------------------|-----------|----------|
-| chat (9B) + embed (0.6B on CPU) | ~6GB | 18GB free |
-| chat (9B) + embed (0.6B) + tag (4B) | ~10GB | 14GB free |
-| fallback only (35B-A3B) | ~22GB | 2GB free |
+| Config | Chat weights | KV @ 32K fp16 | Embed | Slack | Fits |
+|--------|--------------|---------------|-------|-------|------|
+| chat IQ4_XS + embed Q8 (default) | 17.7 GB | ~3 GB | 1 GB | ~2 GB | yes |
+| chat IQ4_XS + embed Q8 + `--parallel 2` | 17.7 GB | ~3 GB × 2 slots (share budget) | 1 GB | tight | maybe — drop `-c` to 24 K |
+| chat only (no embed on GPU) | 17.7 GB | ~3 GB | — | ~3 GB | yes |
+
+**Realistic throughput on L4** (~300 GB/s memory bandwidth, ~30 TFLOPS fp16 — **not** a 3090/4090):
+
+- Decode: 30–50 tok/s (community 4090 numbers of ~120 tok/s do **not** port).
+- Prefill: ~2–4 s for a 4K prompt. Mitigated by `--slot-save-path` + `--cache-reuse 256` so shared system prompts are reused across requests.
 
 ### 3.4 llama.cpp Server Configuration
 
-All models served via `llama-server` (the llama.cpp HTTP server) exposing an OpenAI-compatible API. Direct GGUF loading, no abstraction layer overhead.
+Both models run via `llama-server` inside `ghcr.io/ggml-org/llama.cpp:server-cuda` with an OpenAI-compatible API. Exact flags live in `docker-compose.yml`; the equivalent bare-metal commands:
 
 ```bash
-# Chat model — qwen3.5-9b
+# Chat — qwen3.6-35b-a3b (primary)
 llama-server \
-  --model /models/qwen3.5-9b-q4_k_m.gguf \
+  -hf unsloth/Qwen3.6-35B-A3B-GGUF:UD-IQ4_XS \
   --host 0.0.0.0 --port 8081 \
-  --ctx-size 32768 \
-  --n-gpu-layers 99 \
-  --flash-attn \
-  --threads 4 \
-  --cont-batching \
+  --alias qwen3.6-35b-a3b \
+  -ngl 99 -fa on \
+  -c 32768 --parallel 1 \
+  -ctk f16 -ctv f16 \
+  -b 2048 -ub 512 \
+  --slot-save-path /var/cache/llama/slots \
+  --cache-reuse 256 \
+  --temp 0.7 --top-p 0.8 --top-k 20 --min-p 0.0 \
+  --chat-template-kwargs '{"enable_thinking":false}' \
   --metrics
 
-# Embedding model — qwen3-embedding-0.6b (CPU for ingestion, GPU for serving)
+# Embedding — qwen3-embedding-0.6b
 llama-server \
-  --model /models/qwen3-embedding-0.6b-q8_0.gguf \
+  -hf Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0 \
   --host 0.0.0.0 --port 8082 \
-  --ctx-size 8192 \
-  --embedding \
-  --pooling last \
-  --embd-normalize 2 \
-  --n-gpu-layers 0 \
-  --threads 8 \
-  --ubatch-size 512
-
-# Auto-tagging model — qwen3.5-4b
-llama-server \
-  --model /models/qwen3.5-4b-q4_k_m.gguf \
-  --host 0.0.0.0 --port 8083 \
-  --ctx-size 16384 \
-  --n-gpu-layers 99 \
-  --flash-attn \
-  --threads 4
+  --alias qwen3-embedding-0.6b \
+  --embedding --pooling last --embd-normalize 2 \
+  -ngl 99 -ub 512
 ```
 
-**Key flags:**
+**Why these flags:**
 
-- `--flash-attn` — flash attention for memory efficiency on L4
-- `--cont-batching` — continuous batching for concurrent users on the chat model
-- `--embedding --pooling last` — required for Qwen3-Embedding (decoder-only, uses last-token/EOS pooling, not CLS)
-- `--embd-normalize 2` — L2 normalization (required for cosine similarity in pgvector)
-- `--n-gpu-layers 0` on embed model — run on CPU to keep GPU free for chat; switch to `99` for serving if VRAM allows
+- `-fa on` + `-ngl 99` — flash attention, full GPU offload.
+- `-c 32768 --parallel 1` — 32K context, single slot. `-c` is **total** KV budget; raising `--parallel` splits it.
+- `-ctk f16 -ctv f16` — fp16 KV. `q8_0` KV saves ~1.5 GB but measurably hurts long-context recall and tool-arg fidelity; only flip to q8 if you need ≥128K context.
+- `-b 2048 -ub 512` — physical / micro batch sizes tuned for L4 prefill throughput.
+- `--slot-save-path` + `--cache-reuse 256` — persist KV prefixes across requests. Huge win for the DreamRAG orchestrator, which re-sends the same system prompt every turn.
+- `--chat-template-kwargs '{"enable_thinking":false}'` — Unsloth's recommended non-thinking setting for Qwen3.6 chat workloads. For coding/precise tasks, flip to thinking mode with `temp=0.6 top_p=0.95`.
+- Embedding `--pooling last --embd-normalize 2` — required for Qwen3-Embedding (decoder-only EOS pooling) and for cosine similarity in pgvector.
+
+**Tuning rules of thumb:**
+
+- OOM? Drop `-c` before dropping quant. 32K → 16K saves ~1.5 GB.
+- Gibberish at long context on certain drivers? Try `-ctk bf16 -ctv bf16`.
+- Need huge (128K+) context? Flip `-ctk q8_0 -ctv q8_0` — quality hit is only on deep-recall.
+- Do **not** use `--n-cpu-moe`. `g2-standard-8` has 32 GB RAM and PCIe 4.0 x16 — MoE expert offload only helps when you have 128+ GB RAM and want a bigger model.
 
 **Qwen3-Embedding note:** These models use decoder-only architecture with last-token pooling. The `<|endoftext|>` token aggregates the full sequence meaning. Instruction-aware — prefix queries with task instructions for 1-5% improvement:
 
@@ -231,28 +236,20 @@ Query: I was flying over a dark ocean and felt peaceful
 ```python
 from langchain_openai import ChatOpenAI, OpenAIEmbeddings
 
-# Chat — points at llama-server on :8081
+# Chat — points at llama-server on :8081 (in-compose hostname: chat-model)
 llm = ChatOpenAI(
-    base_url="http://localhost:8081/v1",
+    base_url="http://chat-model:8081/v1",  # or http://localhost:8081/v1 outside compose
     api_key="not-needed",
-    model="qwen3.5-9b",
+    model="qwen3.6-35b-a3b",
     temperature=0.7,
 )
 
-# Embeddings — points at llama-server on :8082
+# Embeddings — points at llama-server on :8082 (in-compose hostname: embed-model)
 embeddings = OpenAIEmbeddings(
-    base_url="http://localhost:8082/v1",
+    base_url="http://embed-model:8082/v1",
     api_key="not-needed",
     model="qwen3-embedding-0.6b",
     dimensions=1024,  # MRL: can reduce to 768 or 512 if needed
-)
-
-# Auto-tagger — points at llama-server on :8083
-tagger_llm = ChatOpenAI(
-    base_url="http://localhost:8083/v1",
-    api_key="not-needed",
-    model="qwen3.5-4b",
-    temperature=0,
 )
 ```
 
@@ -469,10 +466,9 @@ dreamrag/
 |       +-- 002_user_dreams.sql         # user_dreams table [vector(1024)]
 |       +-- 003_checkpoints.sql         # LangGraph PostgresSaver
 |       +-- 004_debug_functions.sql     # debug_bm25_search, debug_rrf_fusion, etc.
-+-- models/                             # GGUF model files (downloaded at deploy time)
-|   +-- qwen3.5-9b-q4_k_m.gguf
-|   +-- qwen3-embedding-0.6b-q8_0.gguf
-|   +-- qwen3.5-4b-q4_k_m.gguf
++-- models/                             # (optional) bind-mount target; default flow uses HF cache volume
+|   +-- Qwen3.6-35B-A3B-GGUF/UD-IQ4_XS.gguf
+|   +-- Qwen3-Embedding-0.6B-GGUF/Q8_0.gguf
 +-- backend/
 |   +-- Dockerfile
 |   +-- pyproject.toml                  # copilotkit==0.1.75, langgraph, fastapi
@@ -521,53 +517,70 @@ dreamrag/
 
 ---
 
-## 9. Deployment (GCP Compute Engine)
+## 9. Deployment (GCP Compute Engine — Docker Compose, Zero Source Builds)
+
+Everything ships as containers. No building llama.cpp, no systemd units. The compose file at the repo root orchestrates `chat-model`, `embed-model`, `backend`, and `frontend`. Models are auto-downloaded from Hugging Face into a named volume (`hf-cache`) on first boot.
+
+### 9.1 Provision the VM
 
 ```bash
-# Create VM with L4 GPU
+# Create VM (L4 24GB, 200GB disk — enough for UD-IQ4_XS (~18GB) + embed (~0.7GB) + buffer)
 gcloud compute instances create dreamrag-vm \
   --machine-type=g2-standard-8 --zone=us-central1-a \
-  --boot-disk-size=200GB --accelerator=type=nvidia-l4,count=1
+  --boot-disk-size=200GB --boot-disk-type=pd-balanced \
+  --accelerator=type=nvidia-l4,count=1 \
+  --maintenance-policy=TERMINATE \
+  --image-family=debian-12 --image-project=debian-cloud \
+  --metadata=install-nvidia-driver=True \
+  --tags=http-server,https-server
 
-# SSH in, install CUDA drivers + build llama.cpp from source
-sudo apt-get install -y build-essential cmake libcurl4-openssl-dev
-git clone https://github.com/ggml-org/llama.cpp && cd llama.cpp
-cmake -B build -DGGML_CUDA=ON -DLLAMA_CURL=ON
-cmake --build build --config Release -j$(nproc)
-sudo cp build/bin/llama-* /usr/local/bin/
-
-# Download GGUF models (from Hugging Face)
-mkdir -p /models
-huggingface-cli download Qwen/Qwen3.5-9B-GGUF qwen3.5-9b-q4_k_m.gguf --local-dir /models
-huggingface-cli download Qwen/Qwen3-Embedding-0.6B-GGUF qwen3-embedding-0.6b-q8_0.gguf --local-dir /models
-huggingface-cli download Qwen/Qwen3.5-4B-GGUF qwen3.5-4b-q4_k_m.gguf --local-dir /models
-
-# Start llama-server instances (use systemd in production — see 9.1)
-# See Section 3.4 for exact flags
-
-# Clone repo -> docker-compose up -> python scripts/ingest_all.py -> python scripts/build_graph_edges.py
+# Firewall for frontend (3000) and backend health checks (8000)
+gcloud compute firewall-rules create dreamrag-web \
+  --allow=tcp:3000,tcp:8000 --target-tags=http-server
 ```
 
-### 9.1 systemd Service Example
+### 9.2 One-time VM Bootstrap (SSH into the VM)
 
-```ini
-[Unit]
-Description=llama.cpp Chat Server (qwen3.5-9b)
-After=network.target
+```bash
+gcloud compute ssh dreamrag-vm --zone=us-central1-a
 
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/llama-server \
-  --model /models/qwen3.5-9b-q4_k_m.gguf \
-  --host 0.0.0.0 --port 8081 \
-  --ctx-size 32768 --n-gpu-layers 99 \
-  --flash-attn --cont-batching --threads 4
-Restart=always
-RestartSec=5
+# Docker + NVIDIA Container Toolkit
+curl -fsSL https://get.docker.com | sh
+sudo usermod -aG docker $USER && newgrp docker
+distribution=$(. /etc/os-release; echo $ID$VERSION_ID)
+curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
+  | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
+  | sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' \
+  | sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+sudo apt-get update && sudo apt-get install -y nvidia-container-toolkit
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
 
-[Install]
-WantedBy=multi-user.target
+# Sanity — must print a GPU row:
+docker run --rm --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi
 ```
+
+### 9.3 Deploy the Stack (from your laptop)
+
+```bash
+# One-time — point local Docker at the VM over SSH
+docker context create gcp-dreamrag --docker host=ssh://USER@GCP_VM_IP
+docker context use gcp-dreamrag
+
+# Bring everything up (first run: ~5–10 min to pull GGUFs into hf-cache volume)
+docker compose up -d --build
+docker compose logs -f chat-model   # wait for "server is listening on http://0.0.0.0:8081"
+
+# Ingest (one-time, runs against the in-VM embed-model)
+docker compose exec backend python scripts/ingest.py
+
+# Smoke the chat endpoint
+curl http://GCP_VM_IP:3000           # frontend
+curl http://GCP_VM_IP:8000/healthz   # backend
+```
+
+See §10.1 (Automated Test Flow) for the end-to-end verification script.
 
 ---
 
@@ -586,3 +599,55 @@ WantedBy=multi-user.target
 **E2E:** 10-15 users journal for 2 weeks, survey on insight quality + provenance usefulness.
 
 **Inference latency:** Benchmark llama.cpp throughput on L4 — target <2s first token for chat, <50ms per embedding.
+
+---
+
+### 10.1 Automated Test Flow (Demo-Day Smoke)
+
+Run this from your laptop after `docker compose up -d` on the VM. No human judgment required — every step exits non-zero on failure. Save as `scripts/smoke_gcp.sh`:
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+VM="${1:?usage: smoke_gcp.sh <GCP_VM_IP>}"
+
+echo "[1/6] chat-model /health"
+curl -fsS "http://$VM:8081/health" | grep -q '"status":"ok"'
+
+echo "[2/6] embed-model /health"
+curl -fsS "http://$VM:8082/health" | grep -q '"status":"ok"'
+
+echo "[3/6] chat completion (tool-arg fidelity)"
+curl -fsS "http://$VM:8081/v1/chat/completions" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"Reply with exactly the JSON: {\"ok\":true}"}],"temperature":0,"max_tokens":32}' \
+  | python3 -c 'import sys,json; r=json.load(sys.stdin); c=r["choices"][0]["message"]["content"]; assert "\"ok\":true" in c.replace(" ",""), c; print("ok:", c)'
+
+echo "[4/6] embedding shape = 1024"
+curl -fsS "http://$VM:8082/v1/embeddings" \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen3-embedding-0.6b","input":"a dream of flying over water"}' \
+  | python3 -c 'import sys,json; v=json.load(sys.stdin)["data"][0]["embedding"]; assert len(v)==1024, len(v); print("dim:", len(v))'
+
+echo "[5/6] backend /copilotkit reachable"
+curl -fsS -o /dev/null -w '%{http_code}\n' "http://$VM:8000/copilotkit" | grep -qE '^(200|405)$'
+
+echo "[6/6] end-to-end agent turn (records a dream, expects widget spawn)"
+python3 scripts/smoke_agent.py --host "$VM"
+echo "ALL GREEN"
+```
+
+`scripts/smoke_agent.py` posts one turn through the CopilotKit runtime and asserts that the AG-UI stream contains at least one `TOOL_CALL_START` for a spawn tool and one `STATE_DELTA` setting `active_widgets`. That single call exercises: frontend→backend routing, LangGraph orchestrator, tool binding, llama.cpp tool-call generation, `search_dreams` pgvector hop, `record_dream` Supabase write, and widget state streaming. If it passes, demo-day works.
+
+**Latency budget check (fail demo if exceeded):**
+
+```bash
+docker compose exec backend python - <<'PY'
+import time, httpx
+t=time.time(); r=httpx.post("http://chat-model:8081/v1/chat/completions",
+  json={"model":"qwen3.6-35b-a3b","messages":[{"role":"user","content":"hi"}],"max_tokens":1},timeout=60)
+print(f"TTFT ~{(time.time()-t)*1000:.0f}ms"); assert r.status_code==200
+PY
+```
+
+Expect 1.5–3 s cold (first request triggers prefill + CUDA graph warmup), 300–800 ms warm. If cold >8 s or warm >1.5 s, something is offloading to CPU — check `nvidia-smi` and `docker compose logs chat-model | grep offloaded`.

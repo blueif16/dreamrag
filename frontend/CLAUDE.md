@@ -4,7 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What This Is
 
-A full-stack AI agent platform: CopilotKit frontend (Next.js 15 + React 19) talks to a LangGraph orchestrator (FastAPI) via AG-UI protocol. The LLM spawns UI widgets onto a canvas through tool calls. Widgets are either **smart** (have a subagent that takes over chat) or **dumb** (display-only, rendered on the client).
+A full-stack AI agent platform for dream analysis: CopilotKit frontend (Next.js 15 + React 19) talks to a LangGraph orchestrator (FastAPI) via AG-UI protocol. The LLM spawns UI widgets onto a canvas through tool calls. Widgets are either **smart** (have a subagent that takes over chat) or **dumb** (display-only, rendered on the client).
+
+**RAG layer**: Supabase pgvector with two namespaces — `community_dreams` (~115K dream narratives from DreamBank, SDDb, Dryad) and `dream_knowledge` (Freud, Jung, Hall/Van de Castle coding manual). Embeddings via local Qwen3-Embedding-0.6B (llama.cpp). Retrieval tools live in `examples/dreams/tools.py` (`record_dream`, `search_dreams`, `get_symbol_graph`, `get_user_profile`).
+
+**Target deployment**: GCP VM (L4 24GB) with all models served locally via llama.cpp — no external LLM API needed in production. All features (chat, widgets, RAG) remain identical to local dev.
 
 ## Data Ingest (one-time setup)
 
@@ -64,28 +68,20 @@ WSL2 shares localhost with Windows by default — use `localhost` from WSL, no I
   --embedding -ngl 99
 
 # Chat model — :8081 (run for the main app)
+# Target model on L4 24GB: unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL (MoE, 3B active)
 .\llama-server.exe `
-  --model C:\models\qwen3.5-9b-q4_k_m.gguf `
+  --model C:\models\Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf `
   --host 0.0.0.0 --port 8081 `
   --ctx-size 32768 `
   --n-gpu-layers 99 `
   --flash-attn `
   --cont-batching
-
-# Auto-tagger — :8083 (optional, for HVdC annotation pipeline)
-.\llama-server.exe `
-  --model C:\models\qwen3.5-4b-q4_k_m.gguf `
-  --host 0.0.0.0 --port 8083 `
-  --ctx-size 16384 `
-  --n-gpu-layers 99 `
-  --flash-attn
 ```
 
 Model downloads (run once in PS):
 ```powershell
 huggingface-cli download Qwen/Qwen3-Embedding-0.6B-GGUF Qwen3-Embedding-0.6B-Q8_0.gguf --local-dir C:\models
-huggingface-cli download Qwen/Qwen3.5-9B-GGUF qwen3.5-9b-q4_k_m.gguf --local-dir C:\models
-huggingface-cli download Qwen/Qwen3.5-4B-GGUF qwen3.5-4b-q4_k_m.gguf --local-dir C:\models
+huggingface-cli download unsloth/Qwen3.6-35B-A3B-GGUF UD-Q4_K_XL/* --local-dir C:\models
 ```
 
 **Step 3 — Run ingest from WSL** (localhost works, no changes to script)
@@ -204,7 +200,7 @@ All spawn tools accept `operation` param: `replace_all` (default, clears canvas)
 ## Environment
 
 - `LLM_PROVIDER`: `nebius` (default), `openai`, or `google`
-- `NEBIUS_API_KEY`, `NEBIUS_MODEL` (default: `Qwen/Qwen3-32B-fast`)
+- `NEBIUS_API_KEY`, `NEBIUS_MODEL` (default: `Qwen/Qwen3.5-397B-A17B-fast`)
 - `OPENAI_API_KEY`, `OPENAI_MODEL` (default: `gpt-4o`)
 - `GOOGLE_API_KEY`, `GOOGLE_MODEL`
 - `SYSTEM_PROMPT`: override orchestrator system prompt
@@ -212,7 +208,9 @@ All spawn tools accept `operation` param: `replace_all` (default, clears canvas)
 
 ## GCP Deployment (Docker Compose via SSH context)
 
-All 5 services (3 llama.cpp model servers + FastAPI backend + Next.js frontend) deploy from a single `docker-compose.yml` at the repo root. Models are bind-mounted from `~/models` on the VM — never baked into images.
+All services (llama.cpp embedding + llama.cpp chat + FastAPI backend + Next.js frontend) deploy from a single `docker-compose.yml` at the repo root. Models are bind-mounted from `~/models` on the VM — never baked into images.
+
+Target VM: L4 24GB. Chat model: `unsloth/Qwen3.6-35B-A3B-GGUF:UD-IQ4_XS` (MoE — ~17.7GB at IQ4_XS, ~3B active params per token). IQ4_XS is chosen over UD-Q4_K_XL to leave ~5GB headroom for fp16 KV cache at 32K context + CUDA buffers. Do **not** quantise KV — `-ctk f16 -ctv f16` is required for tool-call argument fidelity in this agentic RAG workload.
 
 ### One-time VM setup
 ```bash
@@ -223,11 +221,11 @@ curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dear
 # follow https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
 sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker
 
-# 2. Download models (once)
-pip install huggingface_hub[cli]
-huggingface-cli download Qwen/Qwen3-Embedding-0.6B-GGUF Qwen3-Embedding-0.6B-Q8_0.gguf --local-dir ~/models
-huggingface-cli download Qwen/Qwen3.5-9B-GGUF qwen3.5-9b-q4_k_m.gguf --local-dir ~/models
-huggingface-cli download Qwen/Qwen3.5-4B-GGUF qwen3.5-4b-q4_k_m.gguf --local-dir ~/models
+# 2. Models auto-download on first `docker compose up` via llama.cpp's `-hf` flag
+#    into the `hf-cache` named volume. No manual download needed.
+#    If you prefer preloading: `docker volume create hf-cache` then run a throwaway
+#    puller: `docker run --rm -v hf-cache:/root/.cache/huggingface ghcr.io/ggml-org/llama.cpp:server-cuda \
+#      -hf unsloth/Qwen3.6-35B-A3B-GGUF:UD-IQ4_XS --list-loras` (exits after download).
 ```
 
 ### Deploy from local machine
@@ -253,14 +251,25 @@ docker compose restart backend        # hot-restart after code change
 docker compose down                   # stop everything
 ```
 
+### Verifying the deployment
+
+**The user does not run tests — Claude owns the full smoke loop autonomously.** Follow [`docs/gcp-smoke-test.md`](docs/gcp-smoke-test.md) start to finish:
+1. Collect VM_IP / SSH_USER / ZONE from the user once.
+2. Run pre-flight → compose up → ingest → `scripts/smoke_gcp.sh` → agent-turn probe.
+3. Interpret failures against the triage cheatsheet in §6 of that doc before escalating.
+4. Append a dated entry to §8 "Test Log" on every run — this file is the source of truth for demo-readiness state.
+
+Never bypass `fp16 KV`, `-fa on`, or the `-c 32768` budget to work around test failures — those are correctness-critical for the agent's tool-call fidelity.
+
 ---
 
 ## Bug Records & Architecture Decisions
 
 Detailed write-ups of past bugs and design decisions live in `docs/`:
+- [`docs/widget-design-system.md`](docs/widget-design-system.md) -- **widget catalog, design tokens, 3 composition flows (new dream / symbol query / temporal), page layout, file structure**
+- [`docs/widget-protocol.md`](docs/widget-protocol.md) -- smart vs dumb widget lifecycle, canvas operations, 1-turn delay
 - [`docs/bug-tool-registration-pipeline.md`](docs/bug-tool-registration-pipeline.md) -- tools arriving as `[]` at backend; full request flow trace
 - [`docs/bug-canvas-clear.md`](docs/bug-canvas-clear.md) -- why clear_canvas is a backend tool, not frontend
 - [`docs/thinking-token-rendering.md`](docs/thinking-token-rendering.md) -- inline `<think>` token parsing, what was avoided and why
-- [`docs/widget-protocol.md`](docs/widget-protocol.md) -- smart vs dumb widget lifecycle, canvas operations, 1-turn delay
 - [`docs/3d_particle_morph_practices.md`](docs/3d_particle_morph_practices.md) -- 3D particle morph system: GLB pipeline, shader setup, blending/Bloom gotchas, scroll-driven morph architecture
 - [`docs/3d_shape_morph.md`](docs/3d_shape_morph.md) -- full runbook for the particle morph landing page (step-by-step execution guide)

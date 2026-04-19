@@ -1,6 +1,29 @@
-# CopilotKit + LangGraph Full-Stack Agent Scaffold
+# DreamRAG — CopilotKit + LangGraph Full-Stack Agent
 
-Production-ready scaffold for building full-stack AI agents with CopilotKit frontend integration and LangGraph backend orchestration.
+Dream analysis platform. CopilotKit frontend talks to a LangGraph orchestrator; the LLM spawns widgets onto a canvas. RAG over community dream corpora + academic dream texts (Freud, Jung, Hall/Van de Castle).
+
+## Deployment model
+
+**Local dev**: any LLM provider (Nebius / OpenAI / Google) via env vars. See `frontend/CLAUDE.md`.
+
+**Production (GCP VM, L4 24GB)**: all models served locally via llama.cpp — no external API dependency. All features (chat, widgets, RAG, user profiles) are identical to local dev; only the inference endpoint changes. Deployment is Docker Compose over an SSH context — see "GCP Deployment" in `CLAUDE.md`.
+
+- **Chat model**: `unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q4_K_XL` (MoE, ~19GB Q4, ~3B active per token)
+- **Embedding model**: `Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0` on port 8082
+
+## How the RAG works
+
+Two Supabase pgvector namespaces:
+- `community_dreams` — ~115K narratives (DreamBank, SDDb, Dryad HVdC)
+- `dream_knowledge` — Freud / Jung / Hall–Van de Castle coding manual
+
+Retrieval tools (`examples/dreams/tools.py`) are exposed to the orchestrator LLM:
+- `record_dream(text)` — embed + insert user dream
+- `search_dreams(query, namespace, top_k)` — semantic search across either namespace
+- `get_symbol_graph(symbol)` — co-occurring symbols + example dreams
+- `get_user_profile(user_id)` — aggregated emotion/symbol stats
+
+The LLM decides when to call these, then spawns widgets that display the results. Ingest lives in `backend/scripts/ingest.py` (idempotent, namespace-aware).
 
 ## Pinned Versions (Breaking Change Notice)
 
@@ -12,7 +35,7 @@ Production-ready scaffold for building full-stack AI agents with CopilotKit fron
 
 **Backend API**: `add_langgraph_fastapi_endpoint` from `ag_ui_langgraph` + `LangGraphAGUIAgent` from `copilotkit`
 
-**Frontend API**: `LangGraphHttpAgent` from `@copilotkit/runtime/langgraph` + `@copilotkit/react-core` `1.54.0`
+**Frontend API**: `@copilotkitnext/react` + `@copilotkitnext/runtime` (v2). Do NOT import from the legacy `@copilotkit/react-core` / `@copilotkit/react-ui` packages even though they exist in node_modules.
 
 Do **not** upgrade `copilotkit` past `0.1.75` until the upstream import bug is resolved.
 
@@ -27,22 +50,27 @@ Do **not** upgrade `copilotkit` past `0.1.75` until the upstream import bug is r
 ## Project Structure
 
 ```
-copilot-scaffold/
-├── src/
-│   ├── app/                    # Next.js app router
-│   │   ├── api/copilotkit/    # CopilotKit runtime endpoint
-│   │   ├── layout.tsx         # Root layout with CopilotKit provider
-│   │   └── page.tsx           # Main page with chat UI
-│   └── components/            # React components
+frontend/
+├── src/app/                      # Next.js 15 app router (chat, dashboard, archive, profile)
+├── src/components/               # Shared UI (NavShell, WidgetPanel, chat components)
+├── src/lib/widgetEntries.ts      # Auto-scans examples/ for widget configs + components
+├── examples/                     # Plugin directory — each example is a self-contained app
+│   └── dreams/
+│       ├── widgets/              # 14 dumb widgets (current-dream, heatmap-calendar, ...)
+│       ├── tools.py              # Backend RAG tools (record_dream, search_dreams, ...)
+│       └── __init__.py           # SUBAGENTS registry (empty; all widgets dumb)
 ├── backend/
-│   ├── agent/                 # LangGraph agent implementation
-│   │   ├── graph.py          # StateGraph definition
-│   │   ├── state.py          # State schema
-│   │   └── tools.py          # Backend tools
-│   ├── server.py             # FastAPI server
-│   └── pyproject.toml        # Python dependencies
-├── tests/                     # Integration tests
-└── package.json              # Node dependencies
+│   ├── agent/
+│   │   ├── graph.py              # StateGraph: orchestrator + tools_node + subagents
+│   │   ├── state.py              # OrchestratorState
+│   │   ├── subagents/            # factory + registry for smart widgets
+│   │   └── tools.py              # Canvas ops (spawn, clear_canvas)
+│   ├── app/core/                 # RAGStore, QwenEmbeddings, adapters, user_profile
+│   ├── scripts/ingest.py         # Idempotent corpus ingestion into Supabase
+│   └── server.py                 # FastAPI + AG-UI endpoint
+└── supabase/migrations/          # pgvector schema + user dreams table
+
+../docker-compose.yml             # (repo root) GCP VM deployment — models + backend + frontend
 ```
 
 ## Quick Start
