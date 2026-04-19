@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import { Toaster } from "sonner";
 import { ThemeProvider } from "@/components/theme-provider";
-import { CopilotProvider } from "@/components/CopilotProvider";
 
 import "./globals.css";
 
@@ -58,10 +57,8 @@ export default function RootLayout({
           disableTransitionOnChange
           enableSystem
         >
-          <CopilotProvider>
             <Toaster position="top-center" />
             {children}
-          </CopilotProvider>
         </ThemeProvider>
       </body>
     </html>

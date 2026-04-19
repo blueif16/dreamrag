@@ -8,15 +8,15 @@ import { sampleMeshWithColors } from "./sampleMesh";
 import { generateBigMoon } from "./geometries";
 import { particleVertex, particleFragment } from "./shaders";
 
-const PARTICLE_COUNT = 50000;
-// Cloud-sampled iridescent palette — cotton pink, powder blue, lilac, peach blush
-// + warm champagne gold accent for dense core (echoing the gold stars)
+const PARTICLE_COUNT = 7000;
+// Iridescent palette — soft pastels in the cloud's hue family. Light enough
+// to feel airy against the beige-lilac bg, deep enough to still read.
 const COLORS = {
-  cottonPink: new THREE.Color("#fbcfe8"),
-  powderBlue: new THREE.Color("#bfdbfe"),
-  lilac: new THREE.Color("#ddd6fe"),
-  peachBlush: new THREE.Color("#fed7aa"),
-  gold: new THREE.Color("#fde68a"),
+  rose: new THREE.Color("#f5cfde"),       // soft rose
+  periwinkle: new THREE.Color("#c9d0ec"), // soft periwinkle
+  lavender: new THREE.Color("#d6cce8"),   // soft lavender
+  peach: new THREE.Color("#f1d2bd"),      // soft peach, ~5%
+  gold: new THREE.Color("#f0dca0"),       // pale champagne core accent
 };
 
 // Module-level progress — GSAP ScrollTrigger writes here, useFrame reads
@@ -94,11 +94,11 @@ function Particles() {
     const u = {
       uTime: { value: 0 },
       uProgress: { value: 0 },
-      uSize: { value: 28.0 },
-      uColorCottonPink: { value: COLORS.cottonPink },
-      uColorPowderBlue: { value: COLORS.powderBlue },
-      uColorLilac: { value: COLORS.lilac },
-      uColorPeachBlush: { value: COLORS.peachBlush },
+      uSize: { value: 110.0 },
+      uColorCottonPink: { value: COLORS.rose },
+      uColorPowderBlue: { value: COLORS.periwinkle },
+      uColorLilac: { value: COLORS.lavender },
+      uColorPeachBlush: { value: COLORS.peach },
       uColorGold: { value: COLORS.gold },
       uUseVertexColors: { value: 1.0 },
       uDissolve: { value: 0 },

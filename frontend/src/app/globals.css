@@ -54,8 +54,31 @@
     border-color: hsl(var(--border));
   }
   body {
-    @apply bg-background text-foreground;
+    @apply text-foreground;
+    /* Dashboard gradient as body bg — prevents white flash during page transitions */
+    background:
+      radial-gradient(circle at 12% 18%, rgba(214, 241, 231, 0.9), transparent 24%),
+      radial-gradient(circle at 84% 10%, rgba(227, 220, 255, 0.92), transparent 30%),
+      radial-gradient(circle at 82% 82%, rgba(250, 223, 232, 0.82), transparent 24%),
+      radial-gradient(circle at 28% 74%, rgba(203, 224, 255, 0.7), transparent 22%),
+      linear-gradient(160deg, #f8f4ee 0%, #f2edf7 46%, #fbf7f0 100%);
   }
+}
+
+/* Page transition — dashboard slides up as one unit */
+@keyframes page-slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(48px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.page-enter {
+  animation: page-slide-up 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
 /* Landing page animations */

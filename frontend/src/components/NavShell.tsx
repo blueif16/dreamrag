@@ -45,7 +45,7 @@ export function NavShell() {
               onMouseLeave={() => setHoveredNav(null)}
               style={{
                 ...navItemStyle,
-                opacity: active ? 1 : hovered ? 0.7 : 0.4,
+                opacity: active ? 1 : hovered ? 0.95 : 0.8,
               }}
               type="button"
             >
@@ -54,16 +54,19 @@ export function NavShell() {
                   ...navDotStyle,
                   background: active
                     ? "linear-gradient(180deg, #b6d5ff, #6b75d4)"
-                    : "rgba(64, 56, 82, 0.3)",
+                    : "rgba(42, 35, 64, 0.55)",
                   transform: hovered && !active ? "scale(1.3)" : "scale(1)",
                   transition: "all 0.3s cubic-bezier(0.4, 0, 0.2, 1)",
+                  boxShadow: active
+                    ? "0 0 8px rgba(107, 117, 212, 0.4)"
+                    : "0 0 0 1px rgba(255, 255, 255, 0.4)",
                 }}
               />
               <span
                 style={{
                   ...navLabelStyle,
-                  opacity: active ? 1 : hovered ? 0.7 : 0.4,
-                  color: active ? "#6b75d4" : "#403852",
+                  opacity: active ? 1 : hovered ? 0.95 : 0.78,
+                  color: active ? "#6b75d4" : "#1f1935",
                   transform: "translateX(0)",
                   transition: "all 0.25s ease",
                 }}
@@ -123,7 +126,7 @@ const leftNavStyle: React.CSSProperties = {
   zIndex: 20,
   display: "flex",
   flexDirection: "column",
-  gap: 24,
+  gap: 22,
 };
 
 const navLineStyle: React.CSSProperties = {
@@ -132,7 +135,7 @@ const navLineStyle: React.CSSProperties = {
   top: 10,
   bottom: 10,
   width: 1,
-  background: "rgba(64, 56, 82, 0.1)",
+  background: "rgba(42, 35, 64, 0.3)",
   borderRadius: 1,
   pointerEvents: "none",
 };
@@ -158,9 +161,10 @@ const navDotStyle: React.CSSProperties = {
 };
 
 const navLabelStyle: React.CSSProperties = {
-  fontSize: "0.65rem",
-  fontWeight: 600,
-  letterSpacing: "0.1em",
+  fontSize: "0.72rem",
+  fontWeight: 700,
+  letterSpacing: "0.08em",
   textTransform: "uppercase" as const,
-  color: "#403852",
+  color: "#1f1935",
+  textShadow: "0 1px 8px rgba(255, 255, 255, 0.55)",
 };
