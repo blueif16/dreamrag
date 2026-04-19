@@ -1,3 +1,5 @@
+import { CopilotProvider } from "@/components/CopilotProvider";
+
 export default function Layout({ children }: { children: React.ReactNode }) {
-  return <>{children}</>;
+  return <CopilotProvider>{children}</CopilotProvider>;
 }

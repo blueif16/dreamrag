@@ -28,35 +28,93 @@ const EMPTY: Profile = {
   total_dreams: 0,
 };
 
-const DEMO: Profile = {
-  user_id: "demo",
-  emotion_distribution: [
-    { label: "Gentle anxiety", pct: 38 },
-    { label: "Wonder", pct: 24 },
-    { label: "Peace", pct: 17 },
-    { label: "Urgency", pct: 12 },
-  ],
-  recurrence: [
-    { label: "Water", value: "9×", note: "Appeared in 40% of dreams" },
-    { label: "Night", value: "5×", note: "Appeared in 22% of dreams" },
-    { label: "House", value: "4×", note: "Appeared in 18% of dreams" },
-  ],
-  current_streak: 27,
-  last7: [true, true, false, true, true, true, true],
-  heatmap_data: [
-    [0, 1, 0, 2, 1],
-    [2, 0, 3, 0, 1],
-    [0, 1, 0, 2, 0],
-    [1, 0, 2, 0, 3],
-    [0, 2, 1, 0, 2],
-    [3, 1, 0, 2, 4],
-    [1, 0, 1, 4, 1],
-  ],
-  heatmap_month: "April",
-  total_dreams: 23,
+const DAYS = ["M", "T", "W", "T", "F", "S", "S"];
+const WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Data-driven inferences — all derived from actual user_profiles fields
+   ───────────────────────────────────────────────────────────────────────────── */
+
+const EMOTION_COLOR: Record<string, string> = {
+  anxiety: "#7b82d8", joy: "#f2b084", sadness: "#7a8296", anger: "#c87a7a",
+  fear: "#6a7080", confusion: "#a89ab8", peace: "#9bc0a4", excitement: "#e5b97a",
+  love: "#e89ba8", loneliness: "#8b94a8", guilt: "#b098b8", wonder: "#e8c47d",
+};
+const BRIGHT = new Set(["joy", "peace", "excitement", "love", "wonder"]);
+const SHADOW = new Set(["anxiety", "sadness", "anger", "fear", "loneliness", "guilt"]);
+
+function colorFor(label: string): string {
+  const key = label.toLowerCase();
+  for (const k of Object.keys(EMOTION_COLOR)) {
+    if (key.includes(k)) return EMOTION_COLOR[k];
+  }
+  return "#a8a0c4";
+}
+
+function classifyTenor(dist: Emotion[]): { label: string; bright: number; shadow: number } {
+  let bright = 0, shadow = 0;
+  for (const e of dist) {
+    const k = e.label.toLowerCase();
+    if ([...BRIGHT].some(b => k.includes(b))) bright += e.pct;
+    else if ([...SHADOW].some(s => k.includes(s))) shadow += e.pct;
+  }
+  const diff = bright - shadow;
+  const label = diff >= 12 ? "Bright" : diff <= -12 ? "Shadow-leaning" : "Balanced";
+  return { label, bright: Math.round(bright), shadow: Math.round(shadow) };
+}
+
+function peakWeekday(grid: number[][]): string | null {
+  if (grid.length < 7) return null;
+  const sums = grid.map(r => r.reduce((a, b) => a + b, 0));
+  const max = Math.max(...sums);
+  if (max === 0) return null;
+  return WEEKDAY_NAMES[sums.indexOf(max)];
+}
+
+function dreamsPerWeek(grid: number[][]): number {
+  if (!grid.length || !grid[0].length) return 0;
+  const total = grid.flat().reduce((a, b) => a + b, 0);
+  return Math.round((total / grid[0].length) * 10) / 10;
+}
+
+function monthTotal(grid: number[][]): number {
+  return grid.flat().reduce((a, b) => a + b, 0);
+}
+
+const MONTH_IDX: Record<string, number> = {
+  January: 0, February: 1, March: 2, April: 3, May: 4, June: 5,
+  July: 6, August: 7, September: 8, October: 9, November: 10, December: 11,
 };
 
-const DAYS = ["M", "T", "W", "T", "F", "S", "S"];
+function firstWeekdayMon0(monthName: string, year: number): number {
+  const m = MONTH_IDX[monthName];
+  if (m === undefined) return 0;
+  const js = new Date(year, m, 1).getDay(); // 0=Sun..6=Sat
+  return (js + 6) % 7;                       // → 0=Mon..6=Sun
+}
+function daysInMonth(monthName: string, year: number): number {
+  const m = MONTH_IDX[monthName];
+  if (m === undefined) return 30;
+  return new Date(year, m + 1, 0).getDate();
+}
+
+function reflectionText(p: Profile): string {
+  const topSym = p.recurrence[0];
+  const topEmo = p.emotion_distribution[0];
+  if (!topSym && !topEmo) return "";
+  if (p.current_streak >= 7 && topSym) {
+    return `A ${p.current_streak}-day current through ${topSym.label.toLowerCase()}.`;
+  }
+  if (topSym && topEmo) {
+    return `Your dreams return to ${topSym.label.toLowerCase()}, colored by ${topEmo.label.toLowerCase()}.`;
+  }
+  if (topSym) return `Your dreams return to ${topSym.label.toLowerCase()}.`;
+  return `Your dreams carry ${topEmo!.label.toLowerCase()}.`;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Page
+   ───────────────────────────────────────────────────────────────────────────── */
 
 export default function ProfilePage() {
   const [p, setProfile] = useState<Profile>(EMPTY);
@@ -65,15 +123,19 @@ export default function ProfilePage() {
   useEffect(() => {
     fetch("/api/user-profile?user_id=default")
       .then((r) => r.json())
-      .then((d: Profile) => {
-        setProfile(d.total_dreams > 0 ? d : DEMO);
-        setLoading(false);
-      })
-      .catch(() => { setProfile(DEMO); setLoading(false); });
+      .then((d: Profile) => { setProfile(d); setLoading(false); })
+      .catch(() => { setProfile(EMPTY); setLoading(false); });
   }, []);
 
   const top = p.recurrence[0];
   const coSymbols = p.recurrence.slice(1, 3);
+  const threadSymbols = p.recurrence.slice(3, 5);
+  const tenor = classifyTenor(p.emotion_distribution);
+  const peak = peakWeekday(p.heatmap_data);
+  const perWeek = dreamsPerWeek(p.heatmap_data);
+  const mTotal = monthTotal(p.heatmap_data);
+  const reflection = reflectionText(p);
+  const hasData = p.total_dreams > 0;
 
   return (
     <div style={root}>
@@ -102,18 +164,38 @@ export default function ProfilePage() {
               @keyframes loaderTextFade { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.7; } }
             `}</style>
           </div>
+        ) : !hasData ? (
+          <div style={{ ...glass, ...heroGlass, padding: 48, textAlign: "center" }}>
+            <div style={inner}>
+              <h2 style={{ ...heroName, fontSize: "2.4rem" }}>No dreams recorded yet.</h2>
+              <p style={muted}>
+                Start in <a href="/dashboard" style={link}>Dashboard</a> — patterns build as you record.
+              </p>
+            </div>
+          </div>
         ) : (
           <div style={grid}>
-            {/* ── Hero (5 col) ── */}
+            {/* ── Hero (5 col) — emotion-colored signature + live summaries ── */}
             <article style={{ ...glass, ...heroGlass, gridColumn: "span 5", minHeight: 340 }}>
               <div style={inner}>
-                <div style={row18}>
-                  <div style={avatar} />
-                  <h2 style={heroName}>Dreamer</h2>
+                <div style={{ display: "grid", gap: 4 }}>
+                  <small style={{ ...summaryLbl, margin: 0 }}>{p.user_id}</small>
+                  <h2 style={heroName}>
+                    {p.total_dreams} {p.total_dreams === 1 ? "dream" : "dreams"}
+                  </h2>
                 </div>
                 <div style={twoCol}>
-                  <SummaryCard label="dream streak" metric={`${p.current_streak} days`} note={p.current_streak > 7 ? "Recorded nearly every day." : "Keep the streak alive."} />
-                  <SummaryCard label="favorite motif" metric={top?.label ?? "—"} metricSmall note={coSymbols.length ? `Most often with ${coSymbols.map(s => s.label.toLowerCase()).join(" and ")}.` : "Record more to find patterns."} />
+                  <SummaryCard
+                    label="dream streak"
+                    metric={`${p.current_streak} ${p.current_streak === 1 ? "day" : "days"}`}
+                    note={p.current_streak > 7 ? "Recorded nearly every day." : p.current_streak > 0 ? "Keep the streak alive." : "Record today to begin."}
+                  />
+                  <SummaryCard
+                    label="favorite motif"
+                    metric={top?.label ?? "—"}
+                    metricSmall
+                    note={coSymbols.length ? `Most often with ${coSymbols.map(s => s.label.toLowerCase()).join(" and ")}.` : "Record more to find patterns."}
+                  />
                 </div>
               </div>
             </article>
@@ -122,14 +204,20 @@ export default function ProfilePage() {
             <article style={{ ...glass, gridColumn: "span 7" }}>
               <div style={inner}>
                 <Eyebrow>Emotional Climate</Eyebrow>
-                <div style={barList}>
-                  {p.emotion_distribution.map(e => (
-                    <div key={e.label} style={barRow}>
-                      <div style={barLabelRow}><span>{e.label}</span><span style={{ opacity: 0.6 }}>{e.pct}%</span></div>
-                      <div style={barTrack}><div style={{ ...barFill, width: `${e.pct}%` }} /></div>
-                    </div>
-                  ))}
-                </div>
+                {p.emotion_distribution.length === 0 ? (
+                  <p style={muted}>No emotion tags yet.</p>
+                ) : (
+                  <div style={barList}>
+                    {p.emotion_distribution.map(e => (
+                      <div key={e.label} style={barRow}>
+                        <div style={barLabelRow}><span>{e.label}</span><span style={{ opacity: 0.6 }}>{e.pct}%</span></div>
+                        <div style={barTrack}>
+                          <div style={{ ...barFill, width: `${e.pct}%`, background: `linear-gradient(90deg, ${colorFor(e.label)}cc, ${colorFor(e.label)}ee)` }} />
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </article>
 
@@ -138,7 +226,7 @@ export default function ProfilePage() {
               <div style={inner}>
                 <Eyebrow>Top Symbol</Eyebrow>
                 <div style={metric}>{top?.label ?? "—"}</div>
-                <p style={muted}>{top?.note ?? ""}</p>
+                <p style={muted}>{top?.note ?? "No symbol tags yet."}</p>
                 {coSymbols.length > 0 && (
                   <div style={pillRow}>
                     {coSymbols.map(s => <span key={s.label} style={tag}>{s.label.toLowerCase()} {s.value}</span>)}
@@ -147,11 +235,12 @@ export default function ProfilePage() {
               </div>
             </article>
 
-            {/* ── Rhythm + Last 7 (4 col) ── */}
+            {/* ── Rhythm (4 col) — dreams/week + peak weekday + last7 dots ── */}
             <article style={{ ...glass, gridColumn: "span 4", minHeight: 200 }}>
               <div style={inner}>
                 <Eyebrow>Rhythm</Eyebrow>
-                <div style={metric}>{p.total_dreams > 0 ? "5–7 days" : "—"}</div>
+                <div style={metric}>{perWeek > 0 ? `${perWeek}/wk` : "—"}</div>
+                <p style={muted}>{peak ? `Peaks on ${peak}.` : "Record more to find a rhythm."}</p>
                 <div style={dotRow}>
                   {p.last7.map((on, i) => (
                     <div key={i} style={dotCol}>
@@ -163,46 +252,55 @@ export default function ProfilePage() {
               </div>
             </article>
 
-            {/* ── Lucidity (4 col, accent) ── */}
+            {/* ── Emotional Tenor (4 col) — bright/shadow ratio ── */}
             <article style={{ ...glass, ...accentGlass, gridColumn: "span 4", minHeight: 200 }}>
               <div style={inner}>
-                <Eyebrow>Lucidity</Eyebrow>
-                <div style={{ ...metric, color: "#5761bf" }}>Low</div>
-                <span style={chip}>Dream-led state</span>
+                <Eyebrow>Emotional Tenor</Eyebrow>
+                <div style={{ ...metric, color: tenor.label === "Bright" ? "#b8894a" : tenor.label === "Shadow-leaning" ? "#5761bf" : "#7a6e9a" }}>
+                  {tenor.label}
+                </div>
+                <div style={tenorBar}>
+                  <div style={{ ...tenorSeg, width: `${tenor.shadow}%`, background: "linear-gradient(90deg, #6a7080, #7b82d8)" }} />
+                  <div style={{ ...tenorSeg, width: `${tenor.bright}%`, background: "linear-gradient(90deg, #e8c47d, #f2b084)" }} />
+                </div>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.74rem", color: "rgba(64,56,82,0.55)", letterSpacing: "0.04em" }}>
+                  <span>{tenor.shadow}% shadow</span>
+                  <span>{tenor.bright}% bright</span>
+                </div>
               </div>
             </article>
 
-            {/* ── Heatmap (8 col) ── */}
+            {/* ── Dream Frequency heatmap (12 col) ── */}
+            <article style={{ ...glass, gridColumn: "span 12" }}>
+              <div style={inner}>
+                <Eyebrow>Dream Frequency</Eyebrow>
+                <DreamHeatmap data={p.heatmap_data} month={p.heatmap_month} total={mTotal} />
+              </div>
+            </article>
+
+            {/* ── Recurring Threads (8 col) — from recurrence[3..5] ── */}
             <article style={{ ...glass, gridColumn: "span 8" }}>
               <div style={inner}>
-                <Eyebrow>Dream Frequency{p.heatmap_month ? ` — ${p.heatmap_month}` : ""}</Eyebrow>
-                <div style={heatGrid(p.heatmap_data)}>
-                  {DAYS.map((d, i) => <span key={`l${i}`} style={heatDayLbl}>{d}</span>)}
-                  {p.heatmap_data.length > 0
-                    ? p.heatmap_data.flatMap((row, di) => row.map((lvl, wi) => <span key={`${di}-${wi}`} style={{ ...heatCell, background: HEAT[lvl] ?? HEAT[0] }} />))
-                    : Array.from({ length: 35 }, (_, i) => <span key={i} style={heatCell} />)}
-                </div>
-                <div style={legendRow}>
-                  <span style={legendLabel}>Less</span>
-                  {[0, 1, 2, 3, 4].map(l => <span key={l} style={{ ...legendCell, background: HEAT[l] }} />)}
-                  <span style={legendLabel}>More</span>
-                </div>
+                <Eyebrow>Recurring Threads</Eyebrow>
+                {threadSymbols.length > 0 ? (
+                  <div style={{ display: "grid", gap: 10, gridTemplateColumns: threadSymbols.length > 1 ? "repeat(2, minmax(0, 1fr))" : "1fr" }}>
+                    {threadSymbols.map(s => (
+                      <NoteCard key={s.label} title={`${s.label} · ${s.value}`} body={s.note} />
+                    ))}
+                  </div>
+                ) : (
+                  <p style={muted}>Deeper patterns emerge after more dreams are recorded.</p>
+                )}
               </div>
             </article>
 
-            {/* ── Threads + Reflection (4 col) ── */}
-            <article style={{ ...glass, gridColumn: "span 4" }}>
+            {/* ── Tonight's note (4 col) — templated reflection ── */}
+            <article style={{ ...glass, ...accentGlass, gridColumn: "span 4" }}>
               <div style={inner}>
-                <Eyebrow>Saved Threads</Eyebrow>
-                <div style={{ display: "grid", gap: 10 }}>
-                  <NoteCard title="Water + home" body="Usually tied to belonging and memory." />
-                  <NoteCard title="Night movement" body="Often appears when uncertainty is processed quietly." />
-                </div>
-                <div style={divider} />
-                <Eyebrow>Reflection</Eyebrow>
-                <h2 style={reflTitle}>You dream in search patterns.</h2>
+                <Eyebrow>Tonight&rsquo;s note</Eyebrow>
+                <h2 style={reflTitle}>{reflection || "—"}</h2>
                 <p style={reflNote}>
-                  Open <a href="/archive" style={link}>Archive</a> or <a href="/dashboard" style={link}>Dashboard</a> to return to a single dream.
+                  Return to a single dream in <a href="/archive" style={link}>Archive</a> or <a href="/dashboard" style={link}>Dashboard</a>.
                 </p>
               </div>
             </article>
@@ -213,7 +311,92 @@ export default function ProfilePage() {
   );
 }
 
-/* ── Tiny components ── */
+/* ─────────────────────────────────────────────────────────────────────────────
+   Heatmap — real calendar grid: weekday rows × week columns, with date labels
+   ───────────────────────────────────────────────────────────────────────────── */
+
+function DreamHeatmap({ data, month, total }: { data: number[][]; month: string; total: number }) {
+  const year = new Date().getFullYear();
+  const weeks = data[0]?.length ?? 0;
+  const firstWd = firstWeekdayMon0(month, year);
+  const dim = daysInMonth(month, year);
+
+  const dayAt = (wd: number, week: number): number | null => {
+    const n = week * 7 + wd - firstWd + 1;
+    return n < 1 || n > dim ? null : n;
+  };
+
+  if (!data.length || weeks === 0) {
+    return <p style={muted}>No dreams recorded this month.</p>;
+  }
+
+  return (
+    <div style={{ display: "grid", gap: 16 }}>
+      <div style={heatHeader}>
+        <span style={heatMonthLbl}>{month} {year}</span>
+        <span style={heatTotalLbl}>{total} {total === 1 ? "dream" : "dreams"} this month</span>
+      </div>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: `32px repeat(${weeks}, minmax(0, 1fr))`,
+          gridTemplateRows: "repeat(7, minmax(36px, 1fr))",
+          gap: 6,
+        }}
+      >
+        {DAYS.map((d, i) => (
+          <span key={`l${i}`} style={{ ...heatDayLbl, gridRow: i + 1, gridColumn: 1 }}>{d}</span>
+        ))}
+        {data.flatMap((row, wd) =>
+          row.map((lvl, week) => {
+            const day = dayAt(wd, week);
+            const active = day !== null;
+            return (
+              <span
+                key={`${wd}-${week}`}
+                title={active ? `${month} ${day} · ${lvl}${lvl >= 4 ? "+" : ""} dream${lvl === 1 ? "" : "s"}` : ""}
+                style={{
+                  gridRow: wd + 1,
+                  gridColumn: week + 2,
+                  borderRadius: 8,
+                  background: active ? (HEAT[lvl] ?? HEAT[0]) : "rgba(255, 255, 255, 0.18)",
+                  border: active ? "1px solid rgba(255, 255, 255, 0.72)" : "1px dashed rgba(255, 255, 255, 0.3)",
+                  position: "relative",
+                  padding: "4px 6px",
+                  fontSize: "0.6rem",
+                  fontWeight: 700,
+                  color: active ? "rgba(64, 56, 82, 0.5)" : "transparent",
+                  lineHeight: 1,
+                  transition: "transform 0.2s ease, box-shadow 0.2s ease",
+                  cursor: active ? "default" : "default",
+                  boxShadow: active && lvl > 0 ? "inset 0 1px 0 rgba(255,255,255,0.6)" : "none",
+                }}
+              >
+                {active ? day : ""}
+              </span>
+            );
+          })
+        )}
+      </div>
+      <div style={legendRow}>
+        <span style={legendLabel}>Dreams / day</span>
+        <div style={legendScale}>
+          {[0, 1, 2, 3, 4].map(l => (
+            <div key={l} style={legendItem}>
+              <span style={{ ...legendCell, background: HEAT[l] }} />
+              <span style={legendCountLabel}>{l === 4 ? "4+" : l}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   Tiny components
+   ───────────────────────────────────────────────────────────────────────────── */
+
 function Eyebrow({ children }: { children: React.ReactNode }) {
   return (
     <div style={eyebrowChip}>
@@ -251,7 +434,7 @@ const HEAT: Record<number, string> = {
   1: "rgba(203, 236, 224, 0.78)",
   2: "rgba(208, 215, 255, 0.82)",
   3: "rgba(246, 208, 220, 0.84)",
-  4: "rgba(234, 199, 137, 0.84)",
+  4: "rgba(234, 199, 137, 0.88)",
 };
 
 const root: React.CSSProperties = { position: "relative", minHeight: "100dvh", width: "100vw", fontFamily: '"Manrope", sans-serif', color: "#403852", overflowX: "hidden" };
@@ -326,14 +509,6 @@ const eyebrowChip: React.CSSProperties = {
 const eyebrowDot: React.CSSProperties = { width: 7, height: 7, borderRadius: 999, background: "linear-gradient(180deg, #b6d5ff, #6b75d4)", flexShrink: 0 };
 
 /* ── Hero ── */
-const row18: React.CSSProperties = { display: "flex", gap: 18, alignItems: "center" };
-
-const avatar: React.CSSProperties = {
-  width: 72, height: 72, borderRadius: 24, flexShrink: 0,
-  background: "radial-gradient(circle at 28% 26%, rgba(255, 255, 255, 0.94), transparent 28%), linear-gradient(155deg, rgba(120, 131, 225, 0.9), rgba(238, 194, 210, 0.84))",
-  boxShadow: "inset 0 1px 0 rgba(255, 255, 255, 0.76), 0 14px 30px rgba(113, 123, 214, 0.18)",
-};
-
 const heroName: React.CSSProperties = { margin: 0, fontFamily: '"Cormorant Garamond", serif', fontWeight: 600, fontSize: "2.8rem", lineHeight: 0.94, letterSpacing: "-0.03em", color: "#403852" };
 
 const twoCol: React.CSSProperties = { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 14 };
@@ -378,26 +553,25 @@ const dotCol: React.CSSProperties = { display: "flex", flexDirection: "column", 
 const dot: React.CSSProperties = { width: 10, height: 10, borderRadius: 999, transition: "all 0.3s ease" };
 const dotLabel: React.CSSProperties = { fontSize: "0.6rem", fontWeight: 700, color: "rgba(64, 56, 82, 0.35)", letterSpacing: "0.06em" };
 
-/* ── Chip ── */
-const chip: React.CSSProperties = {
-  display: "inline-flex", alignSelf: "start", padding: "8px 12px", borderRadius: 999,
-  background: "linear-gradient(180deg, rgba(229, 235, 255, 0.92), rgba(245, 247, 255, 0.74))",
-  border: "1px solid rgba(255, 255, 255, 0.84)",
-  boxShadow: "inset 0 1px 0 rgba(255, 255, 255, 0.82), 0 8px 16px rgba(104, 114, 190, 0.08)",
-  fontSize: "0.74rem", fontWeight: 800, letterSpacing: "0.05em",
-  color: "rgba(87, 97, 191, 0.85)",
+/* ── Emotional Tenor bar ── */
+const tenorBar: React.CSSProperties = {
+  display: "flex", height: 12, borderRadius: 999, overflow: "hidden",
+  background: "rgba(114, 108, 134, 0.08)",
+  marginTop: 4,
 };
+const tenorSeg: React.CSSProperties = { height: "100%", transition: "width 0.8s cubic-bezier(0.4, 0, 0.2, 1)" };
 
 /* ── Heatmap ── */
-function heatGrid(data: number[][]): React.CSSProperties {
-  const weeks = data.length > 0 ? data[0].length : 5;
-  return { display: "grid", gridTemplateColumns: `20px repeat(${weeks}, minmax(0, 1fr))`, gridTemplateRows: "repeat(7, minmax(0, 1fr))", gap: 6, marginTop: 8, maxWidth: 400 };
-}
+const heatHeader: React.CSSProperties = { display: "flex", justifyContent: "space-between", alignItems: "baseline", flexWrap: "wrap", gap: 8 };
+const heatMonthLbl: React.CSSProperties = { fontFamily: '"Cormorant Garamond", serif', fontSize: "1.7rem", lineHeight: 1, color: "#403852", letterSpacing: "-0.02em" };
+const heatTotalLbl: React.CSSProperties = { fontSize: "0.82rem", color: "rgba(64, 56, 82, 0.55)", letterSpacing: "0.04em" };
 const heatDayLbl: React.CSSProperties = { fontSize: "0.6rem", fontWeight: 700, color: "rgba(64, 56, 82, 0.3)", display: "flex", alignItems: "center", justifyContent: "center" };
-const heatCell: React.CSSProperties = { aspectRatio: "1", borderRadius: 8, background: HEAT[0], border: "1px solid rgba(255, 255, 255, 0.72)" };
-const legendRow: React.CSSProperties = { display: "flex", alignItems: "center", gap: 4, marginTop: 10 };
-const legendLabel: React.CSSProperties = { fontSize: "0.6rem", fontWeight: 600, color: "rgba(64, 56, 82, 0.35)", letterSpacing: "0.04em", marginRight: 2 };
-const legendCell: React.CSSProperties = { width: 12, height: 12, borderRadius: 4, border: "1px solid rgba(255, 255, 255, 0.72)" };
+const legendRow: React.CSSProperties = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginTop: 6, paddingTop: 10, borderTop: "1px solid rgba(255, 255, 255, 0.42)" };
+const legendLabel: React.CSSProperties = { fontSize: "0.66rem", fontWeight: 700, color: "rgba(64, 56, 82, 0.5)", letterSpacing: "0.1em", textTransform: "uppercase" };
+const legendScale: React.CSSProperties = { display: "flex", alignItems: "center", gap: 10 };
+const legendItem: React.CSSProperties = { display: "flex", flexDirection: "column", alignItems: "center", gap: 3 };
+const legendCell: React.CSSProperties = { width: 14, height: 14, borderRadius: 4, border: "1px solid rgba(255, 255, 255, 0.72)" };
+const legendCountLabel: React.CSSProperties = { fontSize: "0.6rem", fontWeight: 700, color: "rgba(64, 56, 82, 0.55)", letterSpacing: "0.02em" };
 
 /* ── Notes ── */
 const noteCard: React.CSSProperties = {
@@ -410,8 +584,7 @@ const noteCard: React.CSSProperties = {
 const noteTitle: React.CSSProperties = { display: "block", fontSize: "0.82rem", fontWeight: 800, color: "#403852", letterSpacing: "0.02em" };
 
 /* ── Reflection ── */
-const divider: React.CSSProperties = { height: 1, background: "rgba(103, 91, 132, 0.08)", borderRadius: 1 };
-const reflTitle: React.CSSProperties = { margin: 0, fontFamily: '"Cormorant Garamond", serif', fontWeight: 600, fontSize: "2.2rem", lineHeight: 0.94, letterSpacing: "-0.03em", color: "#403852" };
+const reflTitle: React.CSSProperties = { margin: 0, fontFamily: '"Cormorant Garamond", serif', fontWeight: 600, fontSize: "1.9rem", lineHeight: 1.08, letterSpacing: "-0.02em", color: "#403852" };
 const reflNote: React.CSSProperties = { margin: 0, fontSize: "0.85rem", color: "rgba(64, 56, 82, 0.55)", lineHeight: 1.64 };
 const link: React.CSSProperties = { color: "#5761bf", fontWeight: 800, textDecoration: "none" };
 

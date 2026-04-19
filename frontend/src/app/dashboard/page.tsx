@@ -6,9 +6,10 @@ import { useState, useMemo, useEffect, useRef, useCallback } from "react";
 import { useAgent } from "@copilotkitnext/react";
 import { useCopilotKit } from "@copilotkitnext/react";
 import { randomUUID } from "@ag-ui/client";
-import { WidgetPanel } from "@/components/WidgetPanel";
+import { WidgetPanel, useFollowupPrompts } from "@/components/WidgetPanel";
 import { WidgetToolRegistrar } from "@/components/WidgetToolRegistrar";
 import { NavShell } from "@/components/NavShell";
+import { consumePageTransition } from "@/components/TransitionOverlay";
 import { widgetEntries } from "@/lib/widgetEntries";
 import type { SpawnedWidget } from "@/lib/types";
 import type { ActiveWidget } from "@/types/state";
@@ -16,27 +17,75 @@ import type { ActiveWidget } from "@/types/state";
 export default function Page() {
   const [spawned, setSpawned] = useState<SpawnedWidget[]>([]);
   const expectedDumbIds = useRef<Set<string>>(new Set());
+  const replaceAllGuard = useRef(false);
   const { agent } = useAgent({ agentId: "orchestrator" });
   const { copilotkit } = useCopilotKit();
-  const autoSentRef = useRef(false);
+  const agentRef = useRef(agent);
+  const copilotRef = useRef(copilotkit);
+  agentRef.current = agent;
+  copilotRef.current = copilotkit;
   const [isLoading, setIsLoading] = useState(false);
+  const [lastUserMessage, setLastUserMessage] = useState("");
+  const [activeTool, setActiveTool] = useState<string | null>(null);
 
-  // Auto-send dream from landing page
+  // Auto-send dream from landing page — runs once on mount
   useEffect(() => {
-    if (autoSentRef.current) return;
     const stored = sessionStorage.getItem("dreamrag_dream");
     if (!stored) return;
-    autoSentRef.current = true;
-    sessionStorage.removeItem("dreamrag_dream");
     setIsLoading(true);
-    agent.addMessage({ id: randomUUID(), role: "user", content: stored });
-    copilotkit.runAgent({ agent });
-  }, [agent, copilotkit]);
+    setLastUserMessage(stored);
+    console.log("[dreamrag] found dream in sessionStorage:", stored);
+
+    // Poll until tools are registered, then send
+    const poll = setInterval(() => {
+      const ck = copilotRef.current;
+      const ag = agentRef.current;
+      const toolCount = ck.tools.length;
+      console.log(`[dreamrag] polling tools… count=${toolCount}`);
+      if (toolCount === 0) return;
+      clearInterval(poll);
+      // Only remove after we're sure we're sending
+      sessionStorage.removeItem("dreamrag_dream");
+      replaceAllGuard.current = false;
+      console.log("[dreamrag] sending dream to agent");
+      ag.addMessage({ id: randomUUID(), role: "user", content: stored });
+      ck.runAgent({ agent: ag }).catch((err: unknown) => {
+        console.error("[dreamrag] runAgent failed:", err);
+        setIsLoading(false);
+      });
+    }, 150);
+
+    return () => clearInterval(poll);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Track agent running state for loading
   useEffect(() => {
     if (spawned.length > 0) setIsLoading(false);
   }, [spawned]);
+
+  // Surface the latest tool call name to drive the status strip.
+  useEffect(() => {
+    const { unsubscribe } = agent.subscribe({
+      onMessagesChanged: ({ messages }) => {
+        const last = messages[messages.length - 1] as any;
+        if (last?.role !== "assistant") return;
+        const toolCalls = last.tool_calls ?? last.toolCalls;
+        if (Array.isArray(toolCalls) && toolCalls.length > 0) {
+          const lastCall = toolCalls[toolCalls.length - 1];
+          const name = lastCall?.function?.name ?? lastCall?.name ?? null;
+          if (name) setActiveTool(name);
+        }
+      },
+    });
+    return unsubscribe;
+  }, [agent]);
+
+  // Clear status strip when run ends
+  const isRunning = agent.isRunning;
+  useEffect(() => {
+    if (!isRunning) setActiveTool(null);
+  }, [isRunning]);
 
   useEffect(() => {
     const { unsubscribe } = agent.subscribe({
@@ -78,15 +127,25 @@ export default function Page() {
     });
   }, []);
 
-  const isRunning = agent.isRunning;
   const hasWidgets = spawned.length > 0;
   const [input, setInput] = useState("");
+  const [inputFocused, setInputFocused] = useState(false);
+  const followupPrompts = useFollowupPrompts(spawned);
+  const [slideUp, setSlideUp] = useState(false);
+
+  // Detect if we arrived via landing page transition
+  useEffect(() => {
+    if (consumePageTransition()) setSlideUp(true);
+  }, []);
 
   const handleSend = useCallback(() => {
     if (!input.trim() || isRunning) return;
     const text = input;
+    setLastUserMessage(text);
+    setActiveTool(null);
     setInput("");
     setIsLoading(true);
+    replaceAllGuard.current = false;
     agent.addMessage({ id: randomUUID(), role: "user", content: text });
     copilotkit.runAgent({ agent });
   }, [input, isRunning, agent, copilotkit]);
@@ -100,13 +159,14 @@ export default function Page() {
             key={entry.config.id}
             entry={entry}
             setSpawned={setSpawned}
+            replaceAllGuard={replaceAllGuard}
             onOptimisticRender={(w) => {
-              expectedDumbIds.current = new Set([w.id]);
+              expectedDumbIds.current.add(w.id);
             }}
           />
         ))}
 
-      <div style={shellBg}>
+      <div style={shellBg} className={slideUp ? "page-enter" : undefined}>
         {/* Ambient glow layers */}
         <div style={glowTop} />
         <div style={glowBottom} />
@@ -122,26 +182,74 @@ export default function Page() {
 
         {/* Widget grid or loading skeleton */}
         <div style={gridWrapStyle}>
+          {lastUserMessage && (hasWidgets || isRunning) && (
+            <div style={userQuestionStyle}>
+              <span style={userQuestionLabelStyle}>You asked</span>
+              <span style={userQuestionTextStyle}>{lastUserMessage}</span>
+            </div>
+          )}
+          {isRunning && <StatusStrip toolName={activeTool} />}
           {hasWidgets ? (
             <WidgetPanel spawned={spawned} />
-          ) : isLoading || isRunning ? (
+          ) : isRunning ? (
             <SkeletonCards />
           ) : (
             <EmptyState />
           )}
         </div>
 
-        {/* Floating chat pill */}
-        <div style={chatPillWrap}>
+        {/* Input-focus backdrop — dims canvas, only input area stays above */}
+        {inputFocused && (
+          <div
+            style={inputBackdropStyle}
+            onClick={() => setInputFocused(false)}
+          />
+        )}
+
+        {/* Floating chat pill + prompt tags */}
+        <div style={{ ...chatPillWrap, zIndex: inputFocused ? 200 : 50 }} className={slideUp ? "page-enter" : undefined}>
+          {/* Prompt tags — drawer slides up only when input is focused */}
+          {followupPrompts.length > 0 && (
+            <div style={{
+              ...promptTagsWrap,
+              opacity: inputFocused ? 1 : 0,
+              transform: inputFocused ? "translateY(0)" : "translateY(12px)",
+              pointerEvents: inputFocused ? "auto" : "none",
+              transition: "opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1), transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)",
+            }}>
+              {followupPrompts.map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  style={promptTagStyle}
+                  onClick={() => {
+                    setInput(p);
+                    setInputFocused(false);
+                    setLastUserMessage(p);
+                    setActiveTool(null);
+                    setIsLoading(true);
+                    // Auto-send the prompt
+                    replaceAllGuard.current = false;
+                    agent.addMessage({ id: randomUUID(), role: "user", content: p });
+                    copilotkit.runAgent({ agent });
+                  }}
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
+          )}
+
           <div style={chatPillStyle}>
             <input
-              autoFocus
               style={chatInputStyle}
               disabled={isRunning}
+              onFocus={() => setInputFocused(true)}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter" && !e.shiftKey) {
                   e.preventDefault();
+                  setInputFocused(false);
                   handleSend();
                 }
               }}
@@ -168,7 +276,7 @@ export default function Page() {
                   cursor: input.trim() ? "pointer" : "default",
                 }}
                 disabled={!input.trim()}
-                onClick={handleSend}
+                onClick={() => { setInputFocused(false); handleSend(); }}
                 type="button"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -202,7 +310,7 @@ function SkeletonCards() {
   return (
     <div style={skeletonGridStyle}>
       {[0, 1, 2].map((i) => (
-        <div key={i} style={{ ...skeletonCardStyle, animationDelay: `${i * 0.15}s` }}>
+        <div key={i} style={{ ...skeletonCardStyle, animationDelay: `${i * 0.15}s`, gridColumn: "span 2" }}>
           <div style={skeletonShimmer}>
             <div style={{ ...skeletonLine, width: "40%" }} />
             <div style={{ ...skeletonLine, width: "90%", height: 12 }} />
@@ -220,6 +328,50 @@ function SkeletonCards() {
         @keyframes skeleton-card-in {
           from { opacity: 0; transform: translateY(16px) scale(0.97); }
           to { opacity: 1; transform: translateY(0) scale(1); }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Status strip — live indicator during agent runs, driven by tool calls
+// ---------------------------------------------------------------------------
+
+const TOOL_LABELS: Record<string, string> = {
+  show_current_dream: "Interpreting your dream",
+  show_community_mirror: "Searching the dream archive",
+  show_dream_atmosphere: "Mapping the symbolic constellation",
+  show_echoes_card: "Finding literary echoes",
+  show_followup_chat: "Composing follow-up threads",
+  show_emotion_split: "Weighing the emotional spectrum",
+  show_emotional_climate: "Reading the emotional climate",
+  show_heatmap_calendar: "Charting dream frequency",
+  show_interpretation_synthesis: "Synthesizing interpretations",
+  show_recurrence_card: "Checking for recurrent patterns",
+  show_dream_streak: "Tracking your dream streak",
+  show_textbook_card: "Consulting dream theory",
+  show_top_symbol: "Surfacing a central symbol",
+  show_stat_card: "Computing statistics",
+  show_symbol_cooccurrence_network: "Tracing symbol co-occurrences",
+  show_text_response: "Composing a reply",
+  clear_canvas: "Clearing the canvas",
+};
+
+function StatusStrip({ toolName }: { toolName: string | null }) {
+  const label = (toolName && TOOL_LABELS[toolName]) ?? "Reflecting on your dream";
+  return (
+    <div style={statusStripStyle}>
+      <span style={statusDotStyle} />
+      <span key={label} style={statusLabelStyle}>{label}…</span>
+      <style>{`
+        @keyframes status-pulse {
+          0%, 100% { opacity: 0.45; transform: scale(0.88); }
+          50% { opacity: 1; transform: scale(1.18); }
+        }
+        @keyframes status-label-in {
+          from { opacity: 0; transform: translateX(-4px); }
+          to { opacity: 1; transform: translateX(0); }
         }
       `}</style>
     </div>
@@ -297,6 +449,7 @@ const pageLabelStyle: React.CSSProperties = {
   width: "min(calc(100% - 34px), 1500px)",
   margin: "30px auto 24px",
   paddingLeft: 80,
+  paddingRight: 24,
 };
 
 const pageLabelSmallStyle: React.CSSProperties = {
@@ -326,14 +479,42 @@ const gridWrapStyle: React.CSSProperties = {
   width: "min(calc(100% - 34px), 1500px)",
   margin: "0 auto",
   paddingLeft: 80,
+  paddingRight: 24,
   paddingBottom: 120,
+};
+
+const userQuestionStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "baseline",
+  gap: 12,
+  marginBottom: 20,
+  paddingBottom: 16,
+  borderBottom: "1px solid rgba(107,95,165,0.08)",
+};
+
+const userQuestionLabelStyle: React.CSSProperties = {
+  fontSize: 10,
+  fontWeight: 600,
+  letterSpacing: "0.14em",
+  textTransform: "uppercase",
+  color: "#9b8fb8",
+  flexShrink: 0,
+};
+
+const userQuestionTextStyle: React.CSSProperties = {
+  fontFamily: "'Cormorant Garamond', Georgia, serif",
+  fontSize: 18,
+  fontWeight: 500,
+  color: "#2d2640",
+  lineHeight: 1.3,
 };
 
 const chatPillWrap: React.CSSProperties = {
   position: "fixed",
   bottom: 24,
-  left: "50%",
-  transform: "translateX(-50%)",
+  left: 0,
+  right: 0,
+  marginInline: "auto",
   zIndex: 50,
   width: "100%",
   maxWidth: 680,
@@ -403,7 +584,7 @@ const chatBtnSendStyle: React.CSSProperties = {
 
 const skeletonGridStyle: React.CSSProperties = {
   display: "grid",
-  gridTemplateColumns: "repeat(auto-fill, minmax(320px, 1fr))",
+  gridTemplateColumns: "repeat(6, 1fr)",
   gap: 20,
   padding: "8px 0",
 };
@@ -447,6 +628,34 @@ const skeletonCircle: React.CSSProperties = {
 // Empty state styles
 // ---------------------------------------------------------------------------
 
+const statusStripStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 12,
+  margin: "4px 0 24px",
+  paddingLeft: 2,
+};
+
+const statusDotStyle: React.CSSProperties = {
+  width: 8,
+  height: 8,
+  borderRadius: 999,
+  background: "#7e87df",
+  boxShadow: "0 0 14px rgba(126,135,223,0.55)",
+  animation: "status-pulse 1.4s ease-in-out infinite",
+  flexShrink: 0,
+};
+
+const statusLabelStyle: React.CSSProperties = {
+  fontSize: 11,
+  fontWeight: 600,
+  letterSpacing: "0.14em",
+  textTransform: "uppercase",
+  color: "#7e87df",
+  fontFamily: "'Manrope', sans-serif",
+  animation: "status-label-in 0.3s cubic-bezier(0.4, 0, 0.2, 1) both",
+};
+
 const emptyStateStyle: React.CSSProperties = {
   display: "flex",
   flexDirection: "column",
@@ -475,4 +684,44 @@ const emptySubStyle: React.CSSProperties = {
   color: "rgba(64, 56, 82, 0.5)",
   letterSpacing: "0.04em",
   margin: 0,
+};
+
+// ---------------------------------------------------------------------------
+// Input-focus backdrop + prompt tags
+// ---------------------------------------------------------------------------
+
+const inputBackdropStyle: React.CSSProperties = {
+  position: "fixed",
+  inset: 0,
+  zIndex: 150,
+  background: "rgba(26, 26, 46, 0.22)",
+  backdropFilter: "blur(3px)",
+  WebkitBackdropFilter: "blur(3px)",
+  transition: "opacity 0.25s ease",
+};
+
+const promptTagsWrap: React.CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: 10,
+  justifyContent: "center",
+  marginBottom: 12,
+};
+
+const promptTagStyle: React.CSSProperties = {
+  fontSize: 14,
+  fontWeight: 500,
+  color: "#403852",
+  background: "linear-gradient(180deg, rgba(255,255,255,0.82), rgba(255,255,255,0.6))",
+  backdropFilter: "blur(16px) saturate(140%)",
+  WebkitBackdropFilter: "blur(16px) saturate(140%)",
+  border: "1px solid rgba(255,255,255,0.78)",
+  borderRadius: 99,
+  padding: "10px 20px",
+  cursor: "pointer",
+  transition: "all 0.2s cubic-bezier(0.4, 0, 0.2, 1)",
+  boxShadow: "inset 0 1px 0 rgba(255,255,255,0.7), 0 4px 14px rgba(96,82,124,0.1)",
+  fontFamily: "'Manrope', sans-serif",
+  letterSpacing: "0.01em",
+  lineHeight: 1.3,
 };
