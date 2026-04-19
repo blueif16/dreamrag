@@ -1,14 +1,56 @@
 services:
   chat-model:
-    image: ghcr.io/ggerganov/llama.cpp:server-cuda
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
     restart: unless-stopped
     volumes:
-      - ${MODELS_DIR:-/root/models}:/models:ro
-    command: >
-      --model /models/qwen3.5-9b-q4_k_m.gguf
-      --host 0.0.0.0 --port 8081
-      --ctx-size 32768 --n-gpu-layers 99
-      --flash-attn --cont-batching
+      - hf-cache:/root/.cache/huggingface
+      - llama-slots:/var/cache/llama/slots
+    command:
+      - "-hf"
+      - "unsloth/Qwen3.6-35B-A3B-GGUF:UD-IQ4_XS"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8081"
+      - "--alias"
+      - "qwen3.6-35b-a3b"
+      - "-ngl"
+      - "99"
+      - "-fa"
+      - "on"
+      - "-c"
+      - "32768"
+      - "--parallel"
+      - "1"
+      - "-ctk"
+      - "f16"
+      - "-ctv"
+      - "f16"
+      - "-b"
+      - "2048"
+      - "-ub"
+      - "512"
+      - "--slot-save-path"
+      - "/var/cache/llama/slots"
+      - "--cache-reuse"
+      - "256"
+      - "--temp"
+      - "0.7"
+      - "--top-p"
+      - "0.8"
+      - "--top-k"
+      - "20"
+      - "--min-p"
+      - "0.0"
+      - "--chat-template-kwargs"
+      - '{"enable_thinking":false}'
+      - "--metrics"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 30
+      start_period: 600s
     deploy:
       resources:
         reservations:
@@ -18,31 +60,32 @@ services:
               capabilities: [gpu]
 
   embed-model:
-    image: ghcr.io/ggerganov/llama.cpp:server-cuda
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
     restart: unless-stopped
     volumes:
-      - ${MODELS_DIR:-/root/models}:/models:ro
-    command: >
-      --model /models/Qwen3-Embedding-0.6B-Q8_0.gguf
-      --host 0.0.0.0 --port 8082
-      --pooling last --embd-normalize 2 --embedding -ngl 99
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-
-  tagger-model:
-    image: ghcr.io/ggerganov/llama.cpp:server-cuda
-    restart: unless-stopped
-    volumes:
-      - ${MODELS_DIR:-/root/models}:/models:ro
-    command: >
-      --model /models/qwen3.5-4b-q4_k_m.gguf
-      --host 0.0.0.0 --port 8083
-      --ctx-size 16384 --n-gpu-layers 99 --flash-attn
+      - hf-cache:/root/.cache/huggingface
+    command:
+      - "-hf"
+      - "Qwen/Qwen3-Embedding-0.6B-GGUF:Q8_0"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8082"
+      - "--alias"
+      - "qwen3-embedding-0.6b"
+      - "--embedding"
+      - "--pooling"
+      - "last"
+      - "-ngl"
+      - "99"
+      - "-ub"
+      - "512"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8082/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 20
+      start_period: 300s
     deploy:
       resources:
         reservations:
@@ -59,16 +102,20 @@ services:
     ports:
       - "8000:8000"
     depends_on:
-      - chat-model
-      - embed-model
+      chat-model:
+        condition: service_healthy
+      embed-model:
+        condition: service_healthy
     env_file:
       - ./frontend/backend/.env
     environment:
       LLM_PROVIDER: openai
       OPENAI_BASE_URL: http://chat-model:8081/v1
       OPENAI_API_KEY: not-needed
-      OPENAI_MODEL: qwen3.5-9b
+      OPENAI_MODEL: qwen3.6-35b-a3b
       EMBED_BASE_URL: http://embed-model:8082/v1
+      EMBED_MODEL: qwen3-embedding-0.6b
+      EMBED_DIM: "1024"
       FRONTEND_URL: http://frontend:3000
 
   frontend:
@@ -83,3 +130,7 @@ services:
     environment:
       REMOTE_ACTION_URL: http://backend:8000/copilotkit
       NODE_ENV: production
+
+volumes:
+  hf-cache:
+  llama-slots:

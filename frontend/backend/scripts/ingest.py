@@ -411,9 +411,11 @@ def check_embedding_server() -> bool:
         except Exception as e:
             print(f"  Embedding API test failed: {e}")
             return False
-    # Local llama.cpp
+    # Local llama.cpp — derive health URL from EMBED_BASE_URL (/v1 → /health)
+    base = os.getenv("EMBED_BASE_URL", "http://localhost:8082/v1").rstrip("/")
+    health_url = base[:-3] + "/health" if base.endswith("/v1") else base + "/health"
     try:
-        return requests.get("http://localhost:8082/health", timeout=3).status_code == 200
+        return requests.get(health_url, timeout=3).status_code == 200
     except Exception:
         return False
 

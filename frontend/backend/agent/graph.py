@@ -5,6 +5,7 @@ All content is injected at startup via the subagent registry.
 """
 import os
 import json
+import asyncio
 import logging
 from dotenv import load_dotenv
 from pydantic import create_model, Field as PydanticField
@@ -85,11 +86,20 @@ def _repair_response(response):
     return response
 
 
+def _strip_think_tags(response):
+    """Remove <think>...</think> blocks from Qwen3 responses."""
+    import re
+    if isinstance(response.content, str) and "<think>" in response.content:
+        response.content = re.sub(r"<think>[\s\S]*?</think>\s*", "", response.content)
+    return response
+
+
 async def _invoke_with_repair_and_retry(llm_with_tools, messages, config, label: str):
     """Invoke LLM, repair invalid tool calls, and retry once if tool_calls still empty."""
     response = await llm_with_tools.ainvoke(messages, config=config)
     if hasattr(response, "additional_kwargs"):
         response.additional_kwargs.pop("reasoning_content", None)
+    response = _strip_think_tags(response)
     response = _repair_response(response)
     # If we got invalid_tool_calls but no valid tool_calls, retry with error hint
     if (
@@ -105,6 +115,7 @@ async def _invoke_with_repair_and_retry(llm_with_tools, messages, config, label:
         response = await llm_with_tools.ainvoke(retry_messages, config=config)
         if hasattr(response, "additional_kwargs"):
             response.additional_kwargs.pop("reasoning_content", None)
+        response = _strip_think_tags(response)
         response = _repair_response(response)
         logger.info(f"[{label}] retry result: tool_calls={len(getattr(response, 'tool_calls', None) or [])}")
     return response
@@ -194,11 +205,12 @@ def get_llm():
     elif provider == "nebius":
         from langchain_openai import ChatOpenAI
         return ChatOpenAI(
-            model=os.getenv("NEBIUS_MODEL", "Qwen/Qwen3-32B-fast"),
-            base_url="https://api.tokenfactory.nebius.com/v1/",
+            model=os.getenv("NEBIUS_MODEL", "Qwen/Qwen3.5-397B-A17B-fast"),
+            base_url="https://api.tokenfactory.us-central1.nebius.com/v1/",
             api_key=os.getenv("NEBIUS_API_KEY"),
             temperature=0.7,
             model_kwargs={"parallel_tool_calls": False},
+            extra_body={"enable_thinking": False},
         )
     else:
         from langchain_google_genai import ChatGoogleGenerativeAI
@@ -218,59 +230,80 @@ llm = get_llm()
 ORCHESTRATOR_PROMPT = """You are DreamRAG, an AI dream analysis orchestrator. You spawn glassmorphic dashboard widgets by calling tools.
 Every widget on screen was created by a tool call — there is no other way to show UI.
 
-━━━ RETRIEVAL PROTOCOL — ALWAYS do this before spawning for any dream analysis ━━━
+━━━ STEP 1: CLASSIFY THE USER'S INTENT ━━━
 
-For a NEW DREAM submission:
-  1. record_dream(dream_text, user_id)                  — saves dream, returns dream_id
-  2. search_dreams(dream_text, "dream_knowledge", 5)     — Jung/Freud/HVdC chunks
-  3. search_dreams(dream_text, "community_dreams", 5)    — similar real dreams from corpus
-  4. search_dreams(dream_text, "user_default_dreams", 3) — user's own past similar dreams
+Decide which flow to use:
+  A) NEW DREAM — user submits a dream narrative to analyze
+  B) SYMBOL QUERY — user asks about a symbol ("what does water mean?")
+  C) TEMPORAL/PATTERN — user asks about their history ("show my patterns", "how am I doing?")
 
-For a SYMBOL query (e.g. "what does water mean?"):
+━━━ STEP 2: RETRIEVE (before any widget spawns) ━━━
+
+Flow A — NEW DREAM:
+  1. record_dream(dream_text, user_id)
+  2. search_dreams(dream_text, "dream_knowledge", 5)
+  3. search_dreams(dream_text, "community_dreams", 5)
+  4. search_dreams(dream_text, "user_default_dreams", 3)  ← may return 0 results for new users
+
+Flow B — SYMBOL QUERY:
   1. search_dreams(symbol, "dream_knowledge", 5)
   2. search_dreams(symbol, "community_dreams", 5)
-  3. get_symbol_graph(symbol)                            — co-occurrence satellites
+  3. get_symbol_graph(symbol)
+
+Flow C — TEMPORAL/PATTERN:
+  No retrieval needed — widgets are self-contained.
+  BUT: only use this flow if the user_default_dreams search from a prior turn returned results,
+  or if the user explicitly asks for patterns. Never spawn analytics for a brand-new user.
 
 Each search_dreams result contains chunks with an "id" field (integer). Collect these IDs.
 
-━━━ WIDGET SYNTHESIS RULES ━━━
+━━━ STEP 3: SPAWN WIDGETS (synthesize from retrieved chunks — never invent) ━━━
 
-After retrieval, synthesize widget content FROM the returned chunks. Never invent:
-- show_current_dream      → meaning from dream_knowledge chunks, life_echo from community_dreams chunks
-- show_dream_atmosphere   → satellites = symbols found in dream_knowledge chunk text
-- show_followup_chat      → prompts that probe specific concepts from retrieved chunks
-- show_echoes_card        → echoes from user_*_dreams + community_dreams results (use actual content)
-- show_textbook_card      → excerpt = direct quote/paraphrase from a dream_knowledge chunk
-- show_community_mirror   → snippets = actual community_dreams results with their scores
-- show_interpretation_synthesis → each paragraph from a different namespace, tag source accordingly
+Flow A widgets (spawn in this order):
+  show_current_dream (replace_all) — meaning synthesized from dream_knowledge chunks. subconscious_emotion and life_echo 1-2 sentences each.
+  show_dream_atmosphere (add)      — center_symbol + satellites extracted from chunk text
+  show_textbook_card (add)         — excerpt = direct quote/paraphrase from a dream_knowledge chunk
+  show_community_mirror (add)      — snippets = actual community_dreams results with similarity scores
+  show_followup_chat (add)         — prompts the USER might tap to ask next (user's first-person voice, NOT questions you ask them)
+  IF user_default_dreams returned results:
+    show_echoes_card (add)         — echoes from user's past dreams (use actual content)
+    show_emotional_climate (add)   — no args, self-contained
+    show_recurrence_card (add)     — no args, self-contained
+    show_stat_card (add)           — personal vs baseline from corpus_stats metadata
 
-Pass source_chunk_ids on every agent-populated widget (array of chunk id integers that backed it).
+Flow B widgets (spawn in this order):
+  show_interpretation_synthesis (replace_all) — each paragraph from a different namespace, tag source
+  show_textbook_card (add)
+  show_symbol_cooccurrence_network (add)      — symbol connections with weight percentages from get_symbol_graph
+  show_community_mirror (add)
+  show_emotion_split (add)
+  show_followup_chat (add)         — prompts the USER might tap to ask next (user's first-person voice, NOT questions you ask them)
 
-Self-contained widgets — call with NO params, they fetch user stats themselves:
-- show_emotional_climate()    ← no args
-- show_recurrence_card()      ← no args
+Flow C widgets (spawn in this order):
+  show_emotional_climate (replace_all)
+  show_heatmap_calendar (add)
+  show_dream_streak (add)
+  show_top_symbol (add)
+  show_recurrence_card (add)
+  show_stat_card (add)
 
-━━━ COMPOSITION RULES ━━━
+━━━ CONVERSATIONAL FOLLOW-UPS ━━━
 
-NEW DREAM: record_dream + 3× search_dreams FIRST, then spawn:
-  show_current_dream (replace_all) + show_dream_atmosphere (add) + show_textbook_card (add) +
-  show_community_mirror (add) + show_echoes_card (add) + show_emotional_climate (add) +
-  show_recurrence_card (add) + show_followup_chat (add)
+If the user's message is a short clarifying question, a conversational aside, or asks something
+the structural widgets don't cover (and the answer is a 1–4 sentence prose reply), call
+show_text_response(message, source_chunk_ids?) instead of spawning dashboard widgets.
+This is how you deliver text — NEVER emit free assistant text, it won't render.
+Prefer structural widgets whenever the answer has structure (symbols, similar dreams,
+interpretations, patterns).
 
-SYMBOL query: search_dreams×2 + get_symbol_graph FIRST, then:
-  show_interpretation_synthesis (replace_all) + show_textbook_card (add) +
-  show_symbol_cooccurrence_network (add) + show_community_mirror (add) +
-  show_emotion_split (add) + show_followup_chat (add)
+━━━ RULES ━━━
 
-TEMPORAL/PATTERN query:
-  show_emotional_climate (replace_all) + show_heatmap_calendar (add) +
-  show_dream_streak (add) + show_top_symbol (add) + show_lucidity_gauge (add)
-
-GENERAL RULES:
-- Backend tool calls (record_dream, search_dreams, get_symbol_graph) and widget spawns can be batched in the same turn
-- First widget uses operation='replace_all', subsequent use operation='add'
-- Keep text responses brief — the widgets ARE the response
-- clear_canvas() is only for removing widgets without replacing
+- ALWAYS retrieve before spawning (except Flow C self-contained widgets).
+- First widget uses operation='replace_all', rest use operation='add'.
+- Pass source_chunk_ids (array of chunk id integers) on every agent-populated widget.
+- Self-contained widgets (emotional_climate, recurrence_card, heatmap_calendar, dream_streak, top_symbol) take NO args — skip them if the user has no dream history.
+- Never emit free assistant text — use show_text_response for any prose reply. The widgets ARE the response for structured answers.
+- clear_canvas() is only for removing widgets without replacing.
 """
 
 SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", ORCHESTRATOR_PROMPT)
@@ -315,10 +348,21 @@ async def orchestrator_node(state: OrchestratorState, config):
         logger.info(f"[ORCHESTRATOR] injecting pending message: {pending[:60]}")
     response = await _invoke_with_repair_and_retry(llm_with_tools, messages, config, "ORCHESTRATOR")
 
-    if getattr(response, "tool_calls", None):
-        for tc in response.tool_calls:
+    tool_calls = getattr(response, "tool_calls", None) or []
+    invalid_tool_calls = getattr(response, "invalid_tool_calls", None) or []
+    content_preview = (response.content or "")[:200] if isinstance(response.content, str) else str(response.content)[:200]
+    logger.info(
+        f"[ORCHESTRATOR] LLM response: tool_calls={len(tool_calls)} "
+        f"invalid_tool_calls={len(invalid_tool_calls)} "
+        f"content={content_preview!r}"
+    )
+    if tool_calls:
+        for tc in tool_calls:
             is_backend = tc.get("name", "") in _server_tool_names
             logger.info(f"  tool_call: {tc.get('name')} → {'backend' if is_backend else 'AG-UI'}")
+    if invalid_tool_calls:
+        for itc in invalid_tool_calls:
+            logger.warning(f"  invalid_tool_call: {itc}")
 
     # Sync dumb widget state: scan the latest ToolMessages for frontend-tool results
     # (dumb widgets executed on the client) and upsert them into active_widgets so
@@ -507,8 +551,39 @@ async def tools_node(state: OrchestratorState) -> dict:
     messages = []
     state_updates: dict = {}
 
+    # Pre-fetch all async backend tools concurrently (I/O-bound: search, record, etc.)
+    async_results: dict[str, object] = {}
+    async_coros = []
+    async_tc_ids = []
     for tc in last.tool_calls:
         name = tc["name"]
+        if name in _backend_tool_map:
+            fn = _backend_tool_map[name]
+            if fn.coroutine:
+                async_coros.append(fn.coroutine(**tc["args"]))
+                async_tc_ids.append(tc["id"])
+    if async_coros:
+        logger.info(f"[TOOLS] running {len(async_coros)} async backend tools in parallel")
+        results = await asyncio.gather(*async_coros, return_exceptions=True)
+        for tc_id, result in zip(async_tc_ids, results):
+            async_results[tc_id] = result
+
+    for tc in last.tool_calls:
+        name = tc["name"]
+
+        # Async backend tool — use pre-fetched result
+        if tc["id"] in async_results:
+            result = async_results[tc["id"]]
+            if isinstance(result, BaseException):
+                logger.error(f"[TOOLS] async backend '{name}' failed: {result}")
+                result = {"error": str(result)}
+            else:
+                logger.info(f"[TOOLS] backend '{name}' → result={str(result)[:100]}")
+            messages.append(ToolMessage(
+                content=json.dumps(result) if isinstance(result, dict) else str(result),
+                tool_call_id=tc["id"], name=name,
+            ))
+            continue
 
         if name == "clear_canvas":
             ids = tc["args"].get("widget_ids") or None
@@ -583,12 +658,9 @@ async def tools_node(state: OrchestratorState) -> dict:
             ))
 
         elif name in _backend_tool_map:
-            # Standalone backend tool (MCP queries, DB lookups, etc.)
+            # Sync-only backend tool (async ones handled by pre-fetch above)
             fn = _backend_tool_map[name]
-            if fn.coroutine:
-                result = await fn.coroutine(**tc["args"])
-            else:
-                result = fn.func(**tc["args"])
+            result = fn.func(**tc["args"])
             logger.info(f"[TOOLS] backend '{name}' → result={str(result)[:100]}")
             messages.append(ToolMessage(
                 content=json.dumps(result) if isinstance(result, dict) else str(result),
@@ -596,8 +668,7 @@ async def tools_node(state: OrchestratorState) -> dict:
             ))
 
         else:
-            # Should never reach here — route_orchestrator only sends _server_tool_names to tools_node
-            logger.warning(f"[TOOLS] unexpected tool '{name}' in tools_node — not in any tool map")
+            logger.warning(f"[TOOLS] unexpected tool '{name}' in tools_node — skipping (frontend tool?)")
             messages.append(ToolMessage(
                 content=json.dumps({"error": f"Unknown tool: {name}"}),
                 tool_call_id=tc["id"], name=name,
