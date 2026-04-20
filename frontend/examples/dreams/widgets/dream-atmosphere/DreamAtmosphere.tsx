@@ -5,14 +5,27 @@ interface Props {
 
 const DOTS = ["#6b5fa5", "#c4899c", "#c9a55a", "#7d9a6e"];
 
+function coerceToString(item: unknown): string {
+  if (typeof item === "string") return item;
+  if (typeof item === "number") return String(item);
+  if (item && typeof item === "object") {
+    const o = item as Record<string, unknown>;
+    for (const k of ["label", "name", "symbol", "text", "value"]) {
+      if (typeof o[k] === "string") return o[k] as string;
+    }
+  }
+  return "";
+}
+
 function parseSatellites(raw: unknown): string[] {
-  if (Array.isArray(raw)) return raw.filter(Boolean);
+  if (Array.isArray(raw)) return raw.map(coerceToString).filter(Boolean);
   if (typeof raw === "string") {
     const trimmed = raw.trim();
     if (!trimmed || trimmed === "[]") return [];
     if (trimmed.startsWith("[")) {
       try {
-        return JSON.parse(trimmed.replace(/'/g, '"'));
+        const parsed = JSON.parse(trimmed.replace(/'/g, '"'));
+        if (Array.isArray(parsed)) return parsed.map(coerceToString).filter(Boolean);
       } catch {
         /* fall through */
       }
@@ -114,7 +127,7 @@ export default function DreamAtmosphere({
         {satellites.map((label, i) => {
           const dotColor = DOTS[i % DOTS.length];
           return (
-            <div key={label} style={rowStyle}>
+            <div key={`${i}:${label}`} style={rowStyle}>
               <span
                 style={{
                   width: 7,

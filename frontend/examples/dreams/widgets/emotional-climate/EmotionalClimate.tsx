@@ -28,7 +28,7 @@ export default function EmotionalClimate() {
   const [totalDreams, setTotalDreams] = useState<number | null>(null);
 
   useEffect(() => {
-    fetch("/api/user-profile?user_id=default")
+    fetch("/api/user-profile?user_id=demo_dreamer")
       .then((r) => r.json())
       .then((d) => {
         const dist = d.emotion_distribution;
@@ -132,7 +132,7 @@ export default function EmotionalClimate() {
 
               return (
                 <div
-                  key={e.label}
+                  key={`${i}:${e?.label ?? ""}`}
                   style={{
                     display: "flex",
                     alignItems: "center",

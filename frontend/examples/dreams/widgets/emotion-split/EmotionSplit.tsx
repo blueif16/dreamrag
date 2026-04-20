@@ -126,7 +126,7 @@ export default function EmotionSplit({ symbol, symbol_emotions: rawSymbol, overa
           </div>
           {symbolEmotions.map((sl, i) => (
             <BarRow
-              key={sl.label}
+              key={`${i}:${sl?.label ?? ""}`}
               label={sl.label}
               value={sl.value}
               maxValue={maxVal}
@@ -151,7 +151,7 @@ export default function EmotionSplit({ symbol, symbol_emotions: rawSymbol, overa
           </div>
           {overallEmotions.map((sl, i) => (
             <BarRow
-              key={sl.label}
+              key={`${i}:${sl?.label ?? ""}`}
               label={sl.label}
               value={sl.value}
               maxValue={maxVal}

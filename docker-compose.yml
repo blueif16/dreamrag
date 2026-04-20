@@ -136,6 +136,8 @@ services:
       - "3000:3000"
     depends_on:
       - backend
+    env_file:
+      - ./frontend/.env.local
     environment:
       REMOTE_ACTION_URL: http://backend:8000/copilotkit
       NODE_ENV: production

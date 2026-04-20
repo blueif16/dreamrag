@@ -3,13 +3,24 @@ interface Props {
   prompts: string[] | string;
 }
 
+function coerceToString(item: unknown): string {
+  if (typeof item === "string") return item;
+  if (item && typeof item === "object") {
+    const o = item as Record<string, unknown>;
+    for (const k of ["prompt", "text", "question", "label", "value"]) {
+      if (typeof o[k] === "string") return o[k] as string;
+    }
+  }
+  return "";
+}
+
 function parsePrompts(raw: unknown): string[] {
-  if (Array.isArray(raw)) return raw.filter(Boolean);
+  if (Array.isArray(raw)) return raw.map(coerceToString).filter(Boolean);
   if (typeof raw === "string") {
     const t = raw.trim();
     if (!t || t === "[]") return [];
-    try { const parsed = JSON.parse(t); if (Array.isArray(parsed)) return parsed.filter(Boolean); } catch {}
-    try { const parsed = JSON.parse(t.replace(/'/g, '"')); if (Array.isArray(parsed)) return parsed.filter(Boolean); } catch {}
+    try { const parsed = JSON.parse(t); if (Array.isArray(parsed)) return parsed.map(coerceToString).filter(Boolean); } catch {}
+    try { const parsed = JSON.parse(t.replace(/'/g, '"')); if (Array.isArray(parsed)) return parsed.map(coerceToString).filter(Boolean); } catch {}
     return t.split(",").map((s) => s.trim()).filter(Boolean);
   }
   return [];
@@ -26,8 +37,8 @@ export default function FollowupChat({ dream_title, prompts: rawPrompts }: Props
       </div>
 
       <div style={gridStyle}>
-        {prompts.map((p) => (
-          <div key={p} style={promptStyle}>
+        {prompts.map((p, i) => (
+          <div key={`${i}:${p}`} style={promptStyle}>
             {p}
           </div>
         ))}

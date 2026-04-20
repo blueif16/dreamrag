@@ -151,6 +151,7 @@ function FocusableCard({ id, Component, props, isFocused, onFocus, onDismiss }: 
 }) {
   const entry = widgetEntries.find((e) => e.config.id === id);
   const [showSources, setShowSources] = useState(false);
+  const [showChipPopover, setShowChipPopover] = useState(false);
   const [viewingChunk, setViewingChunk] = useState<number | null>(null);
   const cardRef = useRef<HTMLDivElement>(null);
   const [cardRect, setCardRect] = useState<DOMRect | null>(null);
@@ -190,7 +191,7 @@ function FocusableCard({ id, Component, props, isFocused, onFocus, onDismiss }: 
       <div
         ref={cardRef}
         className={layoutClasses(entry?.config.layout)}
-        style={{ cursor: isFocused ? "default" : "pointer" }}
+        style={{ cursor: isFocused ? "default" : "pointer", position: "relative" }}
         onClick={handleCardClick}
       >
         <div style={{ width: "100%", height: "100%", borderRadius: 20, opacity: isFocused ? 0 : 1, transition: "opacity 0.2s ease" }}>
@@ -198,6 +199,63 @@ function FocusableCard({ id, Component, props, isFocused, onFocus, onDismiss }: 
             <Component {...widgetProps} widgetId={id} />
           </Suspense>
         </div>
+
+        {/* always-visible source chip — does not require focus */}
+        {!isFocused && chunkIds.length > 0 && (
+          <>
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                setShowChipPopover((v) => !v);
+              }}
+              style={sourceChipStyle}
+              title="View source chunks"
+            >
+              <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="11" cy="11" r="8" /><path d="M21 21l-4.35-4.35" />
+              </svg>
+              <span>{chunkIds.length} src</span>
+            </button>
+            {showChipPopover && (
+              <div
+                style={chipPopoverStyle}
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <span style={{ fontSize: 9, fontWeight: 600, letterSpacing: "0.12em", textTransform: "uppercase", color: "#C4899C" }}>
+                    Sources
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setShowChipPopover(false)}
+                    style={{ background: "none", border: "none", cursor: "pointer", padding: 2, color: "#5B6EAF" }}
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                      <path d="M18 6L6 18" /><path d="M6 6l12 12" />
+                    </svg>
+                  </button>
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                  {chunkIds.map((cid) => (
+                    <button
+                      key={cid}
+                      type="button"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowChipPopover(false);
+                        setViewingChunk(cid);
+                      }}
+                      style={chunkPillStyle}
+                    >
+                      #{cid}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        )}
       </div>
 
       {/* when focused: portal the card + action panel above the backdrop */}
@@ -326,13 +384,24 @@ function SourcesDropdown({ widgetName, chunkIds, onChunkClick, onClose }: {
 }
 
 /* ---------- parse followup prompts (shared with dashboard) ---------- */
+function coerceToString(item: unknown): string {
+  if (typeof item === "string") return item;
+  if (item && typeof item === "object") {
+    const o = item as Record<string, unknown>;
+    for (const k of ["prompt", "text", "question", "label", "value"]) {
+      if (typeof o[k] === "string") return o[k] as string;
+    }
+  }
+  return "";
+}
+
 function parseFollowupPrompts(raw: unknown): string[] {
-  if (Array.isArray(raw)) return raw.filter(Boolean);
+  if (Array.isArray(raw)) return raw.map(coerceToString).filter(Boolean);
   if (typeof raw === "string") {
     const t = raw.trim();
     if (!t || t === "[]") return [];
-    try { const p = JSON.parse(t); if (Array.isArray(p)) return p.filter(Boolean); } catch {}
-    try { const p = JSON.parse(t.replace(/'/g, '"')); if (Array.isArray(p)) return p.filter(Boolean); } catch {}
+    try { const p = JSON.parse(t); if (Array.isArray(p)) return p.map(coerceToString).filter(Boolean); } catch {}
+    try { const p = JSON.parse(t.replace(/'/g, '"')); if (Array.isArray(p)) return p.map(coerceToString).filter(Boolean); } catch {}
     return t.split(",").map((s) => s.trim()).filter(Boolean);
   }
   return [];
@@ -450,6 +519,31 @@ const chunkPillStyle: React.CSSProperties = {
   borderRadius: 8, padding: "4px 10px",
   cursor: "pointer",
   transition: "all 0.15s ease",
+};
+
+const sourceChipStyle: React.CSSProperties = {
+  position: "absolute", bottom: 10, right: 10,
+  display: "flex", alignItems: "center", gap: 4,
+  fontSize: 10, fontWeight: 500, color: "#5B6EAF",
+  background: "rgba(255,255,255,0.75)",
+  backdropFilter: "blur(8px)", WebkitBackdropFilter: "blur(8px)",
+  border: "1px solid rgba(91,110,175,0.18)",
+  borderRadius: 999, padding: "4px 10px",
+  cursor: "pointer", zIndex: 5,
+  boxShadow: "0 2px 6px rgba(91,110,175,0.08)",
+  transition: "all 0.15s ease",
+};
+
+const chipPopoverStyle: React.CSSProperties = {
+  position: "absolute", bottom: 40, right: 10,
+  minWidth: 180, maxWidth: 260,
+  background: "rgba(255,255,255,0.95)",
+  backdropFilter: "blur(16px)", WebkitBackdropFilter: "blur(16px)",
+  border: "1px solid rgba(255,255,255,0.9)",
+  borderRadius: 14, padding: 12,
+  boxShadow: "0 12px 32px rgba(91,110,175,0.18), 0 1px 0 rgba(255,255,255,0.8) inset",
+  zIndex: 10,
+  fontFamily: "'DM Sans', system-ui, sans-serif",
 };
 
 const overlayBackdrop: React.CSSProperties = {

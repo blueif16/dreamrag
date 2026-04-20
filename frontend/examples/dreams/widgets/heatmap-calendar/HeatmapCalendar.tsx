@@ -14,7 +14,7 @@ const LEVEL_COLORS: Record<number, string> = {
 const DAY_LABELS = ["M", "", "W", "", "F", "", ""];
 
 export default function HeatmapCalendar({ month, data }: Props) {
-  if (!Array.isArray(data) || data.length === 0) return null;
+  if (!Array.isArray(data) || data.length === 0 || !Array.isArray(data[0])) return null;
 
   const container: React.CSSProperties = {
     width: "100%",

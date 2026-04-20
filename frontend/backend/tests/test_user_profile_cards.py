@@ -34,12 +34,12 @@ class TestLayer1DataCorrectness:
     """Verify recompute_profile returns correctly shaped data for seeded dreams."""
 
     def test_recompute_returns_dict(self):
-        profile = recompute_profile("default")
+        profile = recompute_profile("demo_dreamer")
         assert isinstance(profile, dict)
-        assert profile["user_id"] == "default"
+        assert profile["user_id"] == "demo_dreamer"
 
     def test_emotion_distribution_shape(self):
-        profile = recompute_profile("default")
+        profile = recompute_profile("demo_dreamer")
         ed = profile["emotion_distribution"]
         assert isinstance(ed, list)
         assert len(ed) > 0, "Seeded dreams should produce at least 1 emotion"
@@ -49,7 +49,7 @@ class TestLayer1DataCorrectness:
             assert 0 <= item["pct"] <= 100
 
     def test_recurrence_shape(self):
-        profile = recompute_profile("default")
+        profile = recompute_profile("demo_dreamer")
         rec = profile["recurrence"]
         assert isinstance(rec, list)
         assert len(rec) > 0, "Seeded dreams should produce at least 1 recurring symbol"
@@ -60,19 +60,19 @@ class TestLayer1DataCorrectness:
             assert isinstance(item["note"], str)
 
     def test_streak_shape(self):
-        profile = recompute_profile("default")
+        profile = recompute_profile("demo_dreamer")
         assert isinstance(profile["current_streak"], int)
         assert profile["current_streak"] >= 0
 
     def test_last7_shape(self):
-        profile = recompute_profile("default")
+        profile = recompute_profile("demo_dreamer")
         last7 = profile["last7"]
         assert isinstance(last7, list)
         assert len(last7) == 7
         assert all(isinstance(b, bool) for b in last7)
 
     def test_heatmap_data_shape(self):
-        profile = recompute_profile("default")
+        profile = recompute_profile("demo_dreamer")
         grid = profile["heatmap_data"]
         assert isinstance(grid, list)
         assert len(grid) == 7, "Heatmap should have 7 rows (Mon–Sun)"
@@ -81,11 +81,11 @@ class TestLayer1DataCorrectness:
             assert all(isinstance(v, int) and 0 <= v <= 4 for v in row)
 
     def test_heatmap_month_valid(self):
-        profile = recompute_profile("default")
+        profile = recompute_profile("demo_dreamer")
         assert profile["heatmap_month"] in list(calendar.month_name)[1:]
 
     def test_total_dreams_positive(self):
-        profile = recompute_profile("default")
+        profile = recompute_profile("demo_dreamer")
         assert profile["total_dreams"] >= 13
 
 
@@ -100,9 +100,9 @@ class TestLayer2ToolOutput:
     """Verify the @tool wrapper returns correct shapes from Supabase."""
 
     async def test_get_user_profile_returns_profile(self):
-        result = await get_user_profile.ainvoke({"user_id": "default"})
+        result = await get_user_profile.ainvoke({"user_id": "demo_dreamer"})
         assert isinstance(result, dict)
-        assert result.get("user_id") == "default"
+        assert result.get("user_id") == "demo_dreamer"
         assert isinstance(result["emotion_distribution"], list)
         assert isinstance(result["recurrence"], list)
         assert isinstance(result["current_streak"], int)

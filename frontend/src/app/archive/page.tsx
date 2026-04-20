@@ -5,92 +5,84 @@ import { useRouter } from "next/navigation";
 import { NavShell } from "@/components/NavShell";
 import { triggerPageTransition } from "@/components/TransitionOverlay";
 
-/* ── Demo data — fields mirror `user_dreams` table in Supabase ── */
+/* ── Types matching user_dreams table in Supabase ── */
 interface DreamEntry {
   id: string;
-  title: string;                  // derived (agent-generated)
-  date: string;                   // recorded_at, formatted
-  raw_text: string;               // raw_text
-  emotion_tags: string[];         // emotion_tags[]
-  symbol_tags: string[];          // symbol_tags[]
-  character_tags: string[];       // character_tags[]
-  interaction_type: string;       // interaction_type
-  lucidity_score: number;         // 0–1
-  vividness_score: number;        // 0–1
-  // Agent-generated notes (not DB columns; produced by interpreter subagent)
-  interpretation: string;
-  subconsciousEmotion: string;
-  realLifeCorrelation: string;
+  title: string;           // derived from raw_text (first few words)
+  date: string;            // recorded_at, formatted as "Mar 19"
+  raw_text: string;
+  emotion_tags: string[];
+  symbol_tags: string[];
+  character_tags: string[];
+  interaction_type: string;
+  lucidity_score: number;
+  vividness_score: number;
+  hvdc_codes: Record<string, unknown>;
 }
 
-const DREAMS: DreamEntry[] = [
-  {
-    id: "d1",
-    title: "Water under the old house",
-    date: "Mar 19",
-    raw_text: "I walked through deep water beneath a night-blue sky, looking for my childhood house. It felt far away, but I kept moving.",
-    emotion_tags: ["gentle anxiety", "longing"],
-    symbol_tags: ["water", "house", "night sky"],
-    character_tags: ["childhood self"],
-    interaction_type: "solitary search",
-    lucidity_score: 0.32,
-    vividness_score: 0.74,
-    interpretation: "Less crisis than return. Water carries feeling, and the house points back to safety.",
-    subconsciousEmotion: "Gentle tension, noticed rather than overwhelming.",
-    realLifeCorrelation: "This often appears around shifts in role, place, or closeness.",
-  },
-  {
-    id: "d2",
-    title: "Flooded basement",
-    date: "Mar 14",
-    raw_text: "The basement was full of dark water, rising slowly. I was looking for something I'd left behind but couldn't remember what.",
-    emotion_tags: ["urgency", "searching"],
-    symbol_tags: ["water", "basement", "forgotten object"],
-    character_tags: [],
-    interaction_type: "solitary search",
-    lucidity_score: 0.41,
-    vividness_score: 0.68,
-    interpretation: "A familiar motif: something submerged needs retrieval. The forgetting suggests the search matters more than the object.",
-    subconsciousEmotion: "Controlled urgency — aware of the situation but not panicking.",
-    realLifeCorrelation: "Often tied to unfinished tasks or conversations you're avoiding.",
-  },
-  {
-    id: "d3",
-    title: "Rain after the argument",
-    date: "Mar 08",
-    raw_text: "After a tense conversation I can't recall, I walked outside into warm rain. Everything felt washed.",
-    emotion_tags: ["release", "relief"],
-    symbol_tags: ["rain", "warmth", "clearing"],
-    character_tags: ["unseen other"],
-    interaction_type: "aftermath",
-    lucidity_score: 0.28,
-    vividness_score: 0.62,
-    interpretation: "The rain acts as emotional reset. The forgotten argument suggests it was the tension, not the topic, that mattered.",
-    subconsciousEmotion: "Relief arriving without resolution.",
-    realLifeCorrelation: "Appears when you process conflict through distance rather than confrontation.",
-  },
-  {
-    id: "d4",
-    title: "Running beside the river",
-    date: "Feb 27",
-    raw_text: "I was running along a river at dusk. Not away from anything — toward something I could feel but not see.",
-    emotion_tags: ["tense focus", "anticipation"],
-    symbol_tags: ["river", "dusk", "movement"],
-    character_tags: [],
-    interaction_type: "pursuit",
-    lucidity_score: 0.46,
-    vividness_score: 0.81,
-    interpretation: "Pursuit without clear target often signals intuitive direction. The river is pace, not danger.",
-    subconsciousEmotion: "Forward momentum, purposeful but unsure of the destination.",
-    realLifeCorrelation: "Common during periods of professional ambiguity or career transitions.",
-  },
-];
+/* ── DB row shape returned by /api/user-dreams ── */
+interface DreamRow {
+  id: number;
+  raw_text: string;
+  recorded_at: string;
+  emotion_tags: string[] | null;
+  symbol_tags: string[] | null;
+  character_tags: string[] | null;
+  interaction_type: string | null;
+  lucidity_score: number | null;
+  vividness_score: number | null;
+  hvdc_codes: Record<string, unknown> | null;
+}
+
+function formatDate(iso: string): string {
+  return new Date(iso).toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+function dreamTitle(raw_text: string): string {
+  const words = raw_text.trim().split(/\s+/);
+  const slice = words.slice(0, 7).join(" ");
+  return words.length > 7 ? slice + "…" : slice;
+}
+
+function rowToEntry(row: DreamRow): DreamEntry {
+  return {
+    id: String(row.id),
+    title: dreamTitle(row.raw_text),
+    date: formatDate(row.recorded_at),
+    raw_text: row.raw_text,
+    emotion_tags: row.emotion_tags ?? [],
+    symbol_tags: row.symbol_tags ?? [],
+    character_tags: row.character_tags ?? [],
+    interaction_type: row.interaction_type ?? "",
+    lucidity_score: row.lucidity_score ?? 0,
+    vividness_score: row.vividness_score ?? 0,
+    hvdc_codes: row.hvdc_codes ?? {},
+  };
+}
 
 const SOURCES = [
   { title: "Hall / Van de Castle coding manual", note: "Used to compare repeated elements." },
   { title: "DreamBank community records", note: "Used to compare calm dreams shaped by water and childhood places." },
   { title: "DreamBank dreams dataset", note: "Used to compare nocturnal water imagery." },
 ];
+
+/* ── Emotion dot palette — maps any common tag to a colour ── */
+const EMOTION_PALETTE: Record<string, string> = {
+  anxiety: "#8ba6d4", fear: "#8ba6d4", dread: "#8ba6d4",
+  joy: "#e8c47d", happiness: "#e8c47d", bliss: "#e8c47d",
+  sadness: "#a8a8c8", grief: "#a8a8c8",
+  anger: "#c98787", rage: "#c98787",
+  peace: "#a8c9a3", calm: "#a8c9a3", serenity: "#a8c9a3",
+  excitement: "#c4a574", anticipation: "#c4a574",
+  love: "#e89ba8", affection: "#e89ba8",
+  loneliness: "#8b94a8", isolation: "#8b94a8",
+  guilt: "#b098b8", shame: "#b098b8",
+  wonder: "#e8c47d", awe: "#e8c47d",
+  confusion: "#b0a8c4",
+  urgency: "#c98787", searching: "#b0a8c4",
+  release: "#a8c9a3", relief: "#a8c9a3",
+  "gentle anxiety": "#8ba6d4", "tense focus": "#c4a574",
+};
 
 /** Build suggested prompts from the dream's actual tags.
  *  Keeps chat grounded in what the DB knows rather than a canned list. */
@@ -103,29 +95,40 @@ function buildPrompts(d: DreamEntry): string[] {
   return out.slice(0, 4);
 }
 
-const EMOTION_COLOR: Record<string, string> = {
-  "gentle anxiety": "#8ba6d4",
-  "urgency": "#c98787",
-  "release": "#a8c9a3",
-  "tense focus": "#c4a574",
-};
+function emotionColor(tag: string): string {
+  const key = tag.toLowerCase();
+  for (const [k, v] of Object.entries(EMOTION_PALETTE)) {
+    if (key.includes(k)) return v;
+  }
+  return "#a8a8b8";
+}
 
 type Drawer = "sources" | "chat" | null;
 
 export default function ArchivePage() {
+  const [dreams, setDreams] = useState<DreamEntry[]>([]);
+  const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState(0);
   const [drawer, setDrawer] = useState<Drawer>(null);
   const [chatInputValue, setChatInputValue] = useState("");
   const railRef = useRef<HTMLDivElement>(null);
   const router = useRouter();
-  const dream = DREAMS[selected];
+
+  useEffect(() => {
+    fetch("/api/user-dreams?user_id=demo_dreamer")
+      .then(r => r.json())
+      .then((d: { dreams: DreamRow[] }) => {
+        setDreams((d.dreams ?? []).map(rowToEntry));
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, []);
+
+  const dream = dreams[selected];
 
   // Prefetch dashboard so follow-up questions navigate instantly
   useEffect(() => { router.prefetch("/dashboard"); }, [router]);
 
-  /** Mirrors the landing-page flow in `(chat)/page.tsx`: pack the dream's
-   *  real DB context + the user's question into sessionStorage, then
-   *  navigate to /dashboard, which picks it up on mount and runs the agent. */
   const sendToAgent = useCallback((question: string) => {
     const q = question.trim();
     if (!q) return;
@@ -147,8 +150,8 @@ export default function ArchivePage() {
   }, [dream, router]);
 
   useEffect(() => {
-    const prev = () => setSelected(s => (s - 1 + DREAMS.length) % DREAMS.length);
-    const next = () => setSelected(s => (s + 1) % DREAMS.length);
+    const prev = () => setSelected(s => (s - 1 + dreams.length) % Math.max(1, dreams.length));
+    const next = () => setSelected(s => (s + 1) % Math.max(1, dreams.length));
     const handler = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA")) return;
@@ -160,7 +163,7 @@ export default function ArchivePage() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, []);
+  }, [dreams.length]);
 
   useEffect(() => {
     const rail = railRef.current;
@@ -169,8 +172,39 @@ export default function ArchivePage() {
     if (active) active.scrollIntoView({ behavior: "smooth", inline: "center", block: "nearest" });
   }, [selected]);
 
-  const prevDream = () => setSelected(s => (s - 1 + DREAMS.length) % DREAMS.length);
-  const nextDream = () => setSelected(s => (s + 1) % DREAMS.length);
+  const prevDream = () => setSelected(s => (s - 1 + dreams.length) % Math.max(1, dreams.length));
+  const nextDream = () => setSelected(s => (s + 1) % Math.max(1, dreams.length));
+
+  if (loading) {
+    return (
+      <div style={root}>
+        <div style={backdrop} />
+        <div style={glowTop} />
+        <NavShell />
+        <div style={{ position: "relative", zIndex: 1, display: "flex", alignItems: "center", justifyContent: "center", height: "100dvh" }}>
+          <p style={{ fontFamily: '"Cormorant Garamond", serif', fontSize: "1.1rem", fontStyle: "italic", color: "rgba(64,56,82,0.45)", letterSpacing: "0.04em" }}>
+            Loading dreams…
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (dreams.length === 0) {
+    return (
+      <div style={root}>
+        <div style={backdrop} />
+        <div style={glowTop} />
+        <NavShell />
+        <div style={{ position: "relative", zIndex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", height: "100dvh", gap: 12 }}>
+          <p style={{ fontFamily: '"Cormorant Garamond", serif', fontSize: "1.6rem", color: "#403852", letterSpacing: "-0.02em" }}>No dreams recorded yet.</p>
+          <p style={{ fontSize: "0.9rem", color: "rgba(64,56,82,0.5)" }}>
+            Start in <a href="/dashboard" style={{ color: "#5761bf", fontWeight: 800, textDecoration: "none" }}>Dashboard</a> — your dreams will appear here.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div style={root}>
@@ -217,7 +251,7 @@ export default function ArchivePage() {
                   <span style={journalMetaDate}>{dream.date}, 2026</span>
                   <span style={journalMetaSep}>·</span>
                   <span style={journalMetaCount}>
-                    {String(selected + 1).padStart(2, "0")} / {String(DREAMS.length).padStart(2, "0")}
+                    {String(selected + 1).padStart(2, "0")} / {String(dreams.length).padStart(2, "0")}
                   </span>
                 </div>
                 <div style={iconRow}>
@@ -254,21 +288,60 @@ export default function ArchivePage() {
 
               <div style={divider} />
 
-              <section style={detailBlock}>
-                <small style={detailBlockLabel}>Interpretation</small>
-                <p style={detailBlockText}>{dream.interpretation}</p>
-              </section>
+              <div style={factsGrid}>
+                {dream.emotion_tags.length > 0 && (
+                  <section style={detailBlock}>
+                    <small style={detailBlockLabel}>Emotions</small>
+                    <div style={chipWrap}>
+                      {dream.emotion_tags.map(t => (
+                        <span key={t} style={{ ...chip, ...chipEmotion }}>
+                          <span style={{ ...chipDot, background: emotionColor(t) }} />
+                          {t}
+                        </span>
+                      ))}
+                    </div>
+                  </section>
+                )}
 
-              <div style={splitRow}>
-                <section style={detailBlock}>
-                  <small style={detailBlockLabel}>Subconscious Emotion</small>
-                  <p style={detailBlockText}>{dream.subconsciousEmotion}</p>
-                </section>
-                <section style={detailBlock}>
-                  <small style={detailBlockLabel}>Real-life Correlation</small>
-                  <p style={detailBlockText}>{dream.realLifeCorrelation}</p>
-                </section>
+                {dream.character_tags.length > 0 && (
+                  <section style={detailBlock}>
+                    <small style={detailBlockLabel}>Characters</small>
+                    <div style={chipWrap}>
+                      {dream.character_tags.map(t => (
+                        <span key={t} style={{ ...chip, ...chipCharacter }}>{t}</span>
+                      ))}
+                    </div>
+                  </section>
+                )}
+
+                {dream.interaction_type && (
+                  <section style={detailBlock}>
+                    <small style={detailBlockLabel}>Interaction</small>
+                    <div style={chipWrap}>
+                      <span style={{ ...chip, ...chipNeutral }}>{dream.interaction_type}</span>
+                    </div>
+                  </section>
+                )}
               </div>
+
+              <div style={scoreRow}>
+                <ScoreBar label="Lucidity" value={dream.lucidity_score} />
+                <ScoreBar label="Vividness" value={dream.vividness_score} />
+              </div>
+
+              {Object.keys(dream.hvdc_codes).length > 0 && (
+                <section style={detailBlock}>
+                  <small style={detailBlockLabel}>Hall / Van de Castle codes</small>
+                  <div style={chipWrap}>
+                    {Object.entries(dream.hvdc_codes).map(([k, v]) => (
+                      <span key={k} style={{ ...chip, ...chipNeutral }}>
+                        <span style={hvdcKey}>{k}</span>
+                        <span style={hvdcVal}>{typeof v === "object" ? JSON.stringify(v) : String(v)}</span>
+                      </span>
+                    ))}
+                  </div>
+                </section>
+              )}
             </div>
           </article>
 
@@ -280,8 +353,8 @@ export default function ArchivePage() {
         </main>
 
         <div style={railWrap}>
-          <div ref={railRef} style={rail}>
-            {DREAMS.map((d, i) => (
+          <div ref={railRef} className="archive-rail" style={rail}>
+            {dreams.map((d, i) => (
               <button
                 key={d.id}
                 data-idx={i}
@@ -295,8 +368,8 @@ export default function ArchivePage() {
                 <small style={railDate}>{d.date}</small>
                 <strong style={railTitle}>{d.title}</strong>
                 <div style={railEmotionRow}>
-                  <span style={{ ...emotionDot, background: EMOTION_COLOR[d.emotion_tags[0]] ?? "#a8a8b8" }} />
-                  <span style={railEmotion}>{d.emotion_tags[0]}</span>
+                  <span style={{ ...emotionDot, background: emotionColor(d.emotion_tags[0] ?? "") }} />
+                  <span style={railEmotion}>{d.emotion_tags[0] ?? ""}</span>
                 </div>
               </button>
             ))}
@@ -343,8 +416,8 @@ export default function ArchivePage() {
               <small style={factLabel}>Emotions</small>
               <div style={chipWrap}>
                 {dream.emotion_tags.map(t => (
-                  <span key={t} style={{ ...chip, ...chipEmotion, ["--dot" as string]: EMOTION_COLOR[t] ?? "#a8a8b8" } as React.CSSProperties}>
-                    <span style={{ ...chipDot, background: EMOTION_COLOR[t] ?? "#a8a8b8" }} />
+                  <span key={t} style={{ ...chip, ...chipEmotion }}>
+                    <span style={{ ...chipDot, background: emotionColor(t) }} />
                     {t}
                   </span>
                 ))}
@@ -450,7 +523,7 @@ function ScoreBar({ label, value }: { label: string; value: number }) {
    Styles — warm frost glass, same backdrop as landing + profile
    ───────────────────────────────────────────────────────────────────────────── */
 
-const root: React.CSSProperties = { position: "relative", height: "100dvh", width: "100vw", fontFamily: '"Manrope", sans-serif', color: "#403852", overflow: "hidden" };
+const root: React.CSSProperties = { position: "relative", height: "100dvh", width: "100%", fontFamily: '"Manrope", sans-serif', color: "#403852", overflow: "hidden" };
 
 const backdrop: React.CSSProperties = {
   position: "fixed", inset: 0, zIndex: 0,
@@ -475,6 +548,10 @@ const wrap: React.CSSProperties = {
   margin: "0 auto",
   paddingTop: 68, paddingBottom: 20,
   display: "grid", gap: 18,
+  // minmax(0, 1fr) — without the 0 minimum, grid items with intrinsic
+  // content larger than 1fr (the horizontal rail) would expand the column
+  // past wrap's width, breaking overflow-x: auto on the rail.
+  gridTemplateColumns: "minmax(0, 1fr)",
   gridTemplateRows: "auto minmax(0, 1fr) auto",
 };
 
@@ -544,7 +621,9 @@ const journalInner: React.CSSProperties = {
   padding: "28px 40px 32px",
   display: "grid", gap: 18, alignContent: "start",
   overflowY: "auto",
+  overflowX: "hidden",
   flex: 1,
+  minWidth: 0,
   minHeight: 0,
 };
 
@@ -600,6 +679,7 @@ const rawDream: React.CSSProperties = {
   fontFamily: '"Cormorant Garamond", serif', fontStyle: "italic", fontWeight: 400,
   fontSize: "clamp(1.15rem, 1.45vw, 1.45rem)", lineHeight: 1.55, letterSpacing: "-0.005em",
   color: "rgba(64, 56, 82, 0.78)",
+  overflowWrap: "anywhere",
 };
 
 const divider: React.CSSProperties = {
@@ -614,9 +694,24 @@ const detailBlockText: React.CSSProperties = { margin: 0, fontSize: "0.92rem", c
 
 const splitRow: React.CSSProperties = { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 20, marginTop: 4 };
 
+const factsGrid: React.CSSProperties = {
+  display: "grid",
+  gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))",
+  gap: 16,
+  marginTop: 4,
+};
+
+const hvdcKey: React.CSSProperties = {
+  fontWeight: 800, color: "rgba(64, 56, 82, 0.72)", letterSpacing: "0.04em",
+};
+const hvdcVal: React.CSSProperties = {
+  marginLeft: 4, color: "rgba(64, 56, 82, 0.55)", fontVariantNumeric: "tabular-nums",
+};
+
 /* ── Rail (horizontal thumbnails) ── */
 const railWrap: React.CSSProperties = {
   padding: "0 4px",
+  minWidth: 0,
 };
 
 const rail: React.CSSProperties = {
@@ -625,6 +720,7 @@ const rail: React.CSSProperties = {
   scrollSnapType: "x proximity",
   padding: "6px 4px 8px",
   WebkitOverflowScrolling: "touch",
+  minWidth: 0,
 };
 
 const railCard: React.CSSProperties = {

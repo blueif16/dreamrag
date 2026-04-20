@@ -1,22 +1,25 @@
 # DreamRAG — AI Dream Analysis with Dynamic Bento Dashboard
 
 > CS 6120 NLP Final Project — Northeastern University, Khoury College
-> **v3 — April 2026 — Fully Local Inference (Zero Cloud APIs)**
+> **v4 — April 2026 — Retriever → Spawner split, fully local inference (zero cloud APIs)**
 
 ---
 
 ## Product Update — 2026-04-20
 
-The static HTML prototype (`preview.html` / `index.html` with hash routing) has been retired. The live app is a **Next.js 15 + React 19 + CopilotKit v2** frontend talking to a **LangGraph orchestrator** over the AG-UI protocol. The LLM no longer just "returns text" — it **spawns UI widgets onto a bento canvas through tool calls**, and widgets either display data directly (*dumb*) or hand chat control to a domain subagent (*smart*).
+The agent is now a **two-node pipeline**: a **retriever** that classifies intent and populates `state.knowledge` via RAG calls, then hands off to a **spawner** that composes the bento dashboard from those chunks. Previously the orchestrator did both jobs in one prompt, which caused Qwen3.6 to either skip retrieval entirely or skip spawning — splitting the concerns fixed both failure modes.
 
-### What changed since March
+### What changed since the March split-less orchestrator
 
-- **Runtime**: `frontend/` is a Next.js app (pages: `/`, `/dashboard`, `/archive`, `/profile`, `/chat`) served on `:3000`. The static HTML files are deleted.
-- **Agent**: `frontend/backend/agent/graph.py` holds a `StateGraph(OrchestratorState)` with an orchestrator node, a unified `tools_node`, and dynamically-registered subagent nodes per smart widget.
-- **Widget platform**: 18+ widgets auto-discovered from `frontend/examples/*/widgets/*/widget.config.ts`. Spawn tools for dumb widgets are routed through AG-UI to the client; smart-widget spawns are routed backend-side and flip `focused_agent` so a subagent owns chat.
-- **RAG tools wired**: `record_dream`, `search_dreams`, `get_symbol_graph`, `get_user_profile` live in `frontend/examples/dreams/tools.py` and hit Supabase pgvector (namespaces: `community_dreams`, `dream_knowledge`, `user_dreams`).
-- **Ingest**: `scripts/ingest.py` auto-detects what's missing per namespace. Sources now include DreamBank, SDDb, Dryad, plus Gutenberg-sourced Freud + Jung for the knowledge namespace.
-- **Deploy**: GCP L4 VM via a single root `docker-compose.yml` using a Docker SSH context. llama.cpp pulls GGUFs into an `hf-cache` volume on first boot; no bake, no manual download. L4-specific constraints pinned (`-ub 128`, fp16 KV, chat-before-embed load order).
+- **Retriever / spawner split** (`frontend/backend/agent/graph.py`). The retriever sees only `search_dreams`, `record_dream`, `get_symbol_graph`, `get_user_profile`, `dispatch_to_spawner`, and the conversational `show_text_response` off-ramp. The spawner sees only dashboard spawn tools + non-retrieval backend tools. `dispatch_to_spawner` transitions between them. Each node gets a fresh minimal context — the spawner does **not** replay the retriever's tool-call log (context isolation).
+- **`state.knowledge` reducer field** (`state.py`). `search_dreams` now returns `Command(update={"knowledge": {namespace: chunks}})` instead of dumping chunks into a `ToolMessage`. A custom merge reducer dedupes by chunk `id` across namespaces. The spawner reads `state.knowledge` directly; the retriever only gets a terse `{count, stored: true}` ack so chunk content never fills the retriever's context.
+- **Dumb widgets are backend-registered tools**, not AG-UI frontend tools. `frontend/examples/dreams/widget_tools.py` exports 15 `StructuredTool` specs (`show_current_dream`, `show_interpretation_synthesis`, `show_text_response`, ...) bound to the spawner LLM. `tools_node` upserts directly into `active_widgets` — the 1-turn `_sync_dumb_widgets` delay is gone.
+- **LLM dream tagger** (`examples/dreams/tools.py`). `record_dream` is now the last call in the new-dream flow: it reads `state.knowledge`, passes retrieved chunks into an LLM tagger, and produces structured fields (`emotion_tags`, `symbol_tags`, `character_tags`, `interaction_type`, `lucidity_score`, `vividness_score`, `hvdc_codes`). Regex keyword matching is a fallback only. Order matters — calling `record_dream` before search leaves every column empty.
+- **Command-based routing**. `tools_node` always returns `langgraph.types.Command(update=..., goto=...)`. This replaces the previous conditional_edges on the tools node, which were fanning out into two concurrent branches (Command.goto + edge target) and producing duplicate `AIMessage`s the chat API rejected with HTTP 400.
+- **Guardrails baked in** — a) retriever re-invokes with a nudge if the LLM tries `record_dream` / `dispatch_to_spawner` before any `search_dreams` ran; b) `tools_node` auto-fills `source_chunk_ids` with the top-3 chunks by similarity when the LLM passes `[]`; c) mid-dashboard `replace_all` is silently downgraded to `add` to prevent the spawner from wiping its own canvas; d) spawner binds tools with `tool_choice="required"` to stop Qwen from emitting multi-line "plan" prose instead of tool calls.
+- **Cloud E2E tests** (`frontend/backend/tests/cloud_e2e/`). `pytest -m cloud_e2e` drives the real graph against the live L4 VM, asserting retriever→spawner ordering, spawner context isolation, and that `state.active_widgets` is non-empty. JSONL traces land in `runs/`.
+- **New surfaces**: `/api/user-dreams` lists a user's dreams; `/showcase` is a widget gallery rendered with mock data for design review.
+- **Live demo VM** pinned at `35.231.190.210` (frontend :3000, backend :8000, chat LLM :8081, embed :8082). L4-specific constraints unchanged (`-ub 128`, fp16 KV, chat-before-embed load order).
 
 ### System at a glance
 
@@ -32,7 +35,12 @@ flowchart LR
   end
   subgraph Backend[FastAPI :8000]
     AGUI[ag_ui_langgraph<br/>LangGraphAGUIAgent]
-    Graph[LangGraph<br/>OrchestratorState]
+    subgraph Graph[LangGraph — OrchestratorState]
+      Retr[retriever node<br/>intent + RAG calls]
+      Tools[tools_node<br/>Command-based router]
+      Spawn[spawner node<br/>composes bento]
+      Subs[smart subagents]
+    end
   end
   subgraph GPU[llama.cpp on GPU]
     Chat[:8081 qwen3.6-35b-a3b<br/>MoE ~3B active]
@@ -49,77 +57,92 @@ flowchart LR
   UI <--> CKClient
   CKClient <-->|AG-UI events| Runtime
   Runtime <-->|/copilotkit| AGUI
-  AGUI <--> Graph
-  Graph -->|chat + tool calls| Chat
-  Graph -->|embed| Embed
-  Graph -->|RRF + graph walk| Docs
-  Graph --> Rel
-  Graph --> Dreams
+  AGUI <--> Retr
+  Retr --> Tools
+  Tools -->|dispatch_to_spawner| Spawn
+  Tools -->|focused_agent set| Subs
+  Spawn --> Tools
+  Subs --> Tools
+  Retr -->|LLM + tool calls| Chat
+  Spawn -->|LLM + tool calls| Chat
+  Tools -->|embed| Embed
+  Tools -->|RRF + graph walk| Docs
+  Tools --> Rel
+  Tools --> Dreams
   Graph -.checkpoint.-> Ckpt
 ```
 
-### Orchestrator + widget lifecycle
+### Retriever → Spawner lifecycle
 
 ```mermaid
 flowchart TD
   Start([user message]) --> Route{focused_agent<br/>set?}
-  Route -- no --> Orchestrator[orchestrator node<br/>binds: frontend tools,<br/>spawn tools, RAG tools]
   Route -- yes --> Sub[subagent node<br/>domain tools +<br/>handoff_to_orchestrator]
-  Orchestrator -->|tool calls| ToolsNode[tools_node<br/>unified executor]
+  Route -- no --> Retriever[retriever node<br/>binds: search_dreams, record_dream,<br/>get_symbol_graph, get_user_profile,<br/>dispatch_to_spawner, show_text_response]
+  Retriever -->|tool calls| ToolsNode[tools_node<br/>Command-based router]
   Sub -->|tool calls| ToolsNode
-  ToolsNode -->|spawn dumb widget| Emit[emit AG-UI<br/>tool call to client]
+  ToolsNode -->|search_dreams → Command.update| Knowledge[(state.knowledge<br/>per-namespace chunks<br/>dedupe reducer)]
+  ToolsNode -->|record_dream<br/>reads state.knowledge| LLMTag[LLM tagger →<br/>emotion / symbol / character /<br/>interaction / lucidity / vividness /<br/>HVdC counts]
+  ToolsNode -->|dispatch_to_spawner<br/>Command.goto=spawner| Spawner[spawner node<br/>binds: dumb + smart spawn tools<br/>tool_choice=required]
   ToolsNode -->|spawn smart widget| Focus[set focused_agent<br/>+ pending_agent_message]
-  ToolsNode -->|record/search/profile| RAG[(Supabase +<br/>llama.cpp embed)]
-  Emit --> Client[client useFrontendTool<br/>renders widget]
   Focus --> Sub
-  ToolsNode -->|after tools| Decide{route_after_tools}
-  Decide -->|intro_message| Sub
-  Decide -->|focused_agent| Sub
-  Decide -->|otherwise| End([END])
+  Spawner -->|dumb spawn tools<br/>show_current_dream, etc.| ToolsNode
+  ToolsNode -->|dumb widget<br/>upsert active_widgets<br/>Command.goto=spawner| Spawner
+  ToolsNode -->|show_text_response<br/>Command.goto=END| End([END])
+  ToolsNode -->|smart spawn done| End
+  Spawner -.reads.-> Knowledge
+  LLMTag -.reads.-> Knowledge
 ```
 
-Smart widgets own chat until they call `handoff_to_orchestrator`; dumb widgets render optimistically on the client with a 1-turn backend sync via `_sync_dumb_widgets`.
+**Context isolation**: the spawner does NOT replay the retriever's tool-call history. It receives only a fresh `SystemMessage` + a single `HumanMessage` with `user_msg`, the formatted `state.knowledge` blob, `Available chunk IDs: <per-namespace integer list>`, the retriever's optional `note`, and `Already-spawned widgets`. This keeps the spawner's context deterministic and stops Qwen from being distracted by retrieval scaffolding.
+
+Smart widgets still own chat until they call `handoff_to_orchestrator` (which now routes back to the retriever).
 
 ### Tool landscape
 
 ```mermaid
 flowchart LR
-  LLM[Qwen3.6-35B-A3B<br/>orchestrator LLM]
+  Retr[Retriever LLM<br/>Qwen3.6-35B-A3B]
+  Spaw[Spawner LLM<br/>Qwen3.6-35B-A3B<br/>tool_choice=required]
 
-  subgraph RAGTools[RAG tools — examples/dreams/tools.py]
-    RD[record_dream<br/>embed + insert user_dreams]
-    SD[search_dreams<br/>RRF + graph walk]
-    GSG[get_symbol_graph<br/>co_occurs edges]
-    GUP[get_user_profile<br/>cached aggregates]
+  subgraph RetrTools[Retriever-bound tools]
+    RD[record_dream<br/>LLM tagger +<br/>insert user_dreams]
+    SD[search_dreams<br/>returns Command<br/>writes state.knowledge]
+    GSG[get_symbol_graph]
+    GUP[get_user_profile]
+    Dispatch[dispatch_to_spawner<br/>protocol tool]
+    Txt[show_text_response<br/>conversational off-ramp]
   end
 
-  subgraph SpawnTools[Spawn tools — auto-discovered]
-    DumbSpawn[spawn_* dumb widgets<br/>render on client]
-    SmartSpawn[spawn_* smart widgets<br/>hand off chat to subagent]
+  subgraph SpawnTools[Spawner-bound tools — 15 dumb widgets + smart spawns + clear_canvas]
+    DumbSpawn[show_current_dream<br/>show_interpretation_synthesis<br/>show_community_mirror<br/>show_textbook_card<br/>show_dream_atmosphere<br/>show_emotion_split<br/>show_symbol_cooccurrence_network<br/>show_emotional_climate<br/>show_heatmap_calendar<br/>show_recurrence_card<br/>show_followup_chat<br/>show_echoes_card<br/>show_top_symbol<br/>show_dream_streak<br/>show_stat_card]
+    Txt2[show_text_response<br/>goto END]
+    SmartSpawn[spawn_* smart widgets<br/>hand off chat]
     Clear[clear_canvas]
   end
 
   subgraph Subagents[Smart-widget subagents]
     ChatSub[dream_chat subagent]
-    OtherSub[… per smart widget]
-    Handoff[handoff_to_orchestrator]
+    Handoff[handoff_to_orchestrator<br/>→ retriever]
   end
 
-  LLM --> RD
-  LLM --> SD
-  LLM --> GSG
-  LLM --> GUP
-  LLM --> DumbSpawn
-  LLM --> SmartSpawn
-  LLM --> Clear
+  Retr --> RD
+  Retr --> SD
+  Retr --> GSG
+  Retr --> GUP
+  Retr --> Txt
+  Retr --> Dispatch
+  Dispatch -->|state.knowledge ready| Spaw
+  Spaw --> DumbSpawn
+  Spaw --> Txt2
+  Spaw --> SmartSpawn
+  Spaw --> Clear
   SmartSpawn --> ChatSub
-  SmartSpawn --> OtherSub
   ChatSub --> Handoff
-  OtherSub --> Handoff
-  Handoff --> LLM
+  Handoff --> Retr
 
-  RD --> Supa[(Supabase:<br/>user_dreams)]
   SD --> Supa2[(documents +<br/>doc_relations)]
+  RD --> Supa[(user_dreams)]
   GSG --> Supa2
   GUP --> Supa3[(user_profiles)]
 ```
@@ -133,8 +156,17 @@ flowchart LR
 | `/dashboard` | Latest reading — bento canvas with interpretation, metrics, sources | `search_dreams`, `get_user_profile`, `get_symbol_graph`, widget stream |
 | `/archive` | Historical workspace — browse / reopen prior dreams | `search_dreams` (user namespace), per-dream re-analysis |
 | `/profile` | Long-term patterns — streaks, heatmap, top symbols, emotion distribution | `get_user_profile` (cached aggregates, recomputed on `record_dream`) |
+| `/showcase` | Widget gallery — every dumb widget rendered with mock data for design review | None (static mocks) |
+| `/api/user-dreams` | List a user's recent dreams (id, text, tags, scores, HVdC counts) | Supabase `user_dreams` direct |
+| `/api/user-profile` | Cached aggregate profile consumed by self-contained widgets (`emotional_climate`, `recurrence_card`, `top_symbol`) | Supabase `user_profiles` cache |
 
-Shared services: per-user Supabase ownership, async widget streaming via AG-UI `STATE_DELTA`, chunk-level provenance from `search_context_mesh` carried through `chunk_registry` on every widget.
+Shared services: per-user Supabase ownership, async widget streaming via AG-UI `STATE_DELTA`, chunk-level provenance from `search_context_mesh` carried through `source_chunk_ids` on every widget.
+
+### Live demo VM
+
+- IP `35.231.190.210` (docker context `gcp-dreamrag`, `ssh://tk@35.231.190.210`)
+- Frontend `:3000`, backend `:8000`, chat LLM `:8081/v1` (`qwen3.6-35b-a3b`), embed `:8082/v1` (`qwen3-embedding-0.6b`, 1024-dim)
+- Firewall rule `dreamrag-llm-ports` opens 8081/8082 to `0.0.0.0/0` so `pytest -m cloud_e2e` and local dev can point at the VM directly
 
 ## 1. Vision
 
@@ -375,18 +407,30 @@ The `doc_relations` table + recursive CTE graph walk is what separates this from
 | `contradicts` | academic chunk -> academic chunk | continuity_hypothesis -> activation_synthesis |
 | `coded_as` | dream element -> HVdC category | aggressive_interaction -> A/H code |
 
-### 4.3 Retrieval Flow (Self-Correcting LangGraph)
+### 4.3 Retrieval Flow (Retriever → Spawner split)
 
 ```
-User query -> LangGraph Orchestrator:
-  1. classify_query     -> symbol / temporal / similarity / new_entry
-  2. plan_retrieval     -> which namespaces + which SQL queries
-  3. retrieve_node      -> search_context_mesh() per namespace + SQL aggregations
-  4. grade_node         -> LLM checks chunk relevance
-  5. (if poor) rewrite  -> re-retrieve with refined query
-  6. synthesize_node    -> widget layout + content + chunk-to-widget mapping
-  7. emit_state         -> stream to frontend via AG-UI
+User query -> retriever node:
+  1. classify intent in-prompt (A: new dream / B: symbol / C: temporal / conversational)
+  2. issue search_dreams(..) per namespace — each returns Command(update=state.knowledge)
+  3. (Flow A only) record_dream LAST — LLM tagger reads state.knowledge for context
+  4. dispatch_to_spawner(note?) OR show_text_response(msg) for short conversational replies
+
+-> tools_node (Command-routed):
+  - search_dreams / get_symbol_graph / get_user_profile → merge into state.knowledge (reducer dedupes by id)
+  - record_dream → LLM tagger → insert user_dreams row → recompute cached profile
+  - dispatch_to_spawner → Command(goto="spawner")
+  - show_text_response → Command(goto=END)
+  - auto-fill source_chunk_ids with top-3 by similarity if LLM passes []
+
+-> spawner node:
+  5. receives fresh System + single Human with user_msg + formatted state.knowledge
+     + explicit per-namespace chunk id list + retriever note + Already-spawned widgets
+  6. emits dumb widget spawn tool calls per flow (replace_all → add → add → ...)
+  7. terminates with show_text_response("Dashboard ready.") when flow is complete
 ```
+
+Provenance, chunk registry, and graph-hop metadata are unchanged — the spawner carries `source_chunk_ids` on every widget it emits.
 
 ### 4.4 Ingestion (via RAG Scaffold)
 
@@ -433,20 +477,22 @@ All previous references to `vector(768)` in the scaffold SQL must be updated to 
 
 Hard requirement. Every widget card carries provenance metadata linking to the exact chunks that populated it.
 
-### 5.1 Agent State (Backend)
+### 5.1 Agent State (Backend — `frontend/backend/agent/state.py`)
 
 ```python
-class DreamAgentState(TypedDict):
-    question: str
-    query_type: str  # symbol / temporal / similarity / new_entry
-    chunk_registry: dict  # { chunk_id: { content, source, namespace, score, depth, source_type } }
-    layout: dict
-    widgets: list[dict]  # each has "source_chunks": ["chunk_12", "chunk_45"]
-    retry_count: int
-    messages: list
+class OrchestratorState(CopilotKitState):
+    active_widgets: List[ActiveWidget] = []       # [{id, type: "dumb"|"smart", props}]
+    focused_agent: Optional[str] = None           # which smart subagent owns chat
+    widget_state: Dict[str, Any] = {}             # live state for focused smart widget
+    widget_summaries: Dict[str, str] = {}         # summaries keyed by past focused widget
+    pending_agent_message: Optional[str] = None   # intro injected on subagent first turn
+    # Retrieval bucket — populated by search_dreams / get_symbol_graph / get_user_profile
+    # via Command.update. Custom reducer (merge_knowledge) dedupes by chunk id across calls.
+    knowledge: Annotated[Dict[str, List[dict]], merge_knowledge] = {}
+    note: Optional[str] = None                    # retriever → spawner one-line hint
 ```
 
-Every chunk returned by `search_context_mesh` is registered with a unique ID. The `source_type` field distinguishes `"seed"` (direct RRF hit) from graph-traversed results (edge type like `"symbolizes"`, `"co_occurs"`). When `synthesize_node` builds widgets, it tags each with the chunk IDs it consumed.
+Every chunk returned by `search_context_mesh` carries its unique integer `id`, similarity score, source namespace, and graph-hop metadata. The spawner receives the full chunk list in `state.knowledge` and stamps every widget with `source_chunk_ids`. `tools_node` auto-fills `source_chunk_ids` with the top-3 chunks by similarity when the LLM passes `[]` so provenance never silently drops.
 
 ### 5.2 Frontend: Source Drawer (via CopilotKit `useCoAgent`)
 

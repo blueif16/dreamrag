@@ -43,3 +43,7 @@ packages = ["agent"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
+markers = [
+    "slow: long-running tests that hit real LLMs",
+    "cloud_e2e: end-to-end tests against the cloud-hosted LLM VM",
+]

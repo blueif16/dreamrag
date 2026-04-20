@@ -19,7 +19,7 @@ const EMPTY_PROFILE = {
 };
 
 export async function GET(req: NextRequest) {
-  const user_id = req.nextUrl.searchParams.get("user_id") ?? "default";
+  const user_id = req.nextUrl.searchParams.get("user_id") ?? "demo_dreamer";
 
   try {
     const { data, error } = await getSupabase()

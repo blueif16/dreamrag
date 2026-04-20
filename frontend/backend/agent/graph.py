@@ -22,12 +22,14 @@ if not logger.handlers:
 
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
-from langchain_core.messages import SystemMessage, ToolMessage
+from langgraph.types import Command
+from langchain_core.messages import SystemMessage, ToolMessage, HumanMessage, AIMessage
 
 from .state import OrchestratorState
-from .tools import skeleton_tools, clear_canvas, handoff_to_orchestrator
+from .tools import skeleton_tools, retriever_protocol_tools, clear_canvas, handoff_to_orchestrator, dispatch_to_spawner
 from .subagents import load_subagent_registry
 from examples import load_all_backend_tools
+from examples.dreams.widget_tools import WIDGETS as _DUMB_WIDGETS
 
 
 # ---------------------------------------------------------------------------
@@ -179,16 +181,28 @@ def _with_operation_param(spawn_tool):
 
 _spawn_tools_with_op = [_with_operation_param(t) for t in _spawn_tools]
 
+# Dumb-widget spawn tools — backend-registered; state updates handled in tools_node.
+_dumb_widget_tool_map = {cfg.spawn_tool.name: cfg for cfg in _DUMB_WIDGETS}
+
 # Standalone backend tools (MCP queries, DB lookups — no widget spawn or state mutation)
 _backend_tools = load_all_backend_tools()
 _backend_tool_map = {t.name: t for t in _backend_tools}
 
+# Partition backend tools by phase:
+#   retrieval tools go to retriever_node; the rest (MCP-style lookups a spawner might
+#   still need) go to the spawner.
+_RETRIEVAL_TOOL_NAMES = {"search_dreams", "record_dream", "get_symbol_graph", "get_user_profile"}
+_retrieval_backend_tools = [t for t in _backend_tools if t.name in _RETRIEVAL_TOOL_NAMES]
+_spawner_backend_tools = [t for t in _backend_tools if t.name not in _RETRIEVAL_TOOL_NAMES]
+
 # Union of all tool names routed to tools_node (everything else goes to AG-UI / frontend)
 _server_tool_names = (
     {t.name for t in skeleton_tools}
+    | {t.name for t in retriever_protocol_tools}
     | set(_spawn_tool_map.keys())
     | set(_domain_tool_map.keys())
     | set(_backend_tool_map.keys())
+    | set(_dumb_widget_tool_map.keys())
     | {handoff_to_orchestrator.name}
 )
 
@@ -227,8 +241,8 @@ llm = get_llm()
 # Prompts
 # ---------------------------------------------------------------------------
 
-ORCHESTRATOR_PROMPT = """You are DreamRAG, an AI dream analysis orchestrator. You spawn glassmorphic dashboard widgets by calling tools.
-Every widget on screen was created by a tool call — there is no other way to show UI.
+RETRIEVER_PROMPT = """You are DreamRAG's retriever. Classify the user's intent and fetch the data the spawner will need.
+You do NOT spawn dashboard widgets — call dispatch_to_spawner when you're done gathering, and the spawner will render from state.knowledge.
 
 ━━━ STEP 1: CLASSIFY THE USER'S INTENT ━━━
 
@@ -240,10 +254,14 @@ Decide which flow to use:
 ━━━ STEP 2: RETRIEVE (before any widget spawns) ━━━
 
 Flow A — NEW DREAM:
-  1. record_dream(dream_text, user_id)
-  2. search_dreams(dream_text, "dream_knowledge", 5)
-  3. search_dreams(dream_text, "community_dreams", 5)
-  4. search_dreams(dream_text, "user_default_dreams", 3)  ← may return 0 results for new users
+  1. search_dreams(dream_text, "dream_knowledge", 5)
+  2. search_dreams(dream_text, "community_dreams", 5)
+  3. search_dreams(dream_text, "user_default_dreams", 3)  ← may return 0 results for new users
+  4. record_dream(dream_text, user_id)  ← MUST be LAST in this flow
+     record_dream reads state.knowledge (populated by the searches above) and
+     calls an LLM to extract emotions / symbols / characters / interaction /
+     lucidity / vividness / HVdC counts. Running it before the searches means
+     the tagger has no context and every column stays empty. Order matters.
 
 Flow B — SYMBOL QUERY:
   1. search_dreams(symbol, "dream_knowledge", 5)
@@ -255,7 +273,34 @@ Flow C — TEMPORAL/PATTERN:
   BUT: only use this flow if the user_default_dreams search from a prior turn returned results,
   or if the user explicitly asks for patterns. Never spawn analytics for a brand-new user.
 
-Each search_dreams result contains chunks with an "id" field (integer). Collect these IDs.
+Each search_dreams result contains chunks with an "id" field (integer). The spawner will read them from state.knowledge.
+
+━━━ CONVERSATIONAL FOLLOW-UPS ━━━
+
+If the user's message is a short clarifying question, a conversational aside, or asks something
+the structural widgets don't cover (and the answer is a 1–4 sentence prose reply), call
+show_text_response(message, source_chunk_ids?) instead of spawning dashboard widgets.
+This is how you deliver text — NEVER emit free assistant text, it won't render.
+Prefer structural widgets whenever the answer has structure (symbols, similar dreams,
+interpretations, patterns).
+
+━━━ HANDOFF ━━━
+
+When the searches you need are complete and widgets should be rendered, call dispatch_to_spawner(note?).
+Optional `note` is one short line of guidance for the spawner (e.g. "user sounds anxious").
+If you've already answered with show_text_response, do NOT also dispatch — the turn ends.
+"""
+
+
+SPAWNER_PROMPT = """You are DreamRAG's spawner. The retriever already gathered data — it is in state.knowledge and summarised in the human message below.
+You do NOT search. You spawn glassmorphic dashboard widgets by calling tools. Every widget on screen was created by a tool call — there is no other way to show UI.
+
+━━━ STEP 1: CLASSIFY THE USER'S INTENT ━━━
+
+Decide which flow to use:
+  A) NEW DREAM — user submits a dream narrative to analyze
+  B) SYMBOL QUERY — user asks about a symbol ("what does water mean?")
+  C) TEMPORAL/PATTERN — user asks about their history ("show my patterns", "how am I doing?")
 
 ━━━ STEP 3: SPAWN WIDGETS (synthesize from retrieved chunks — never invent) ━━━
 
@@ -287,39 +332,170 @@ Flow C widgets (spawn in this order):
   show_recurrence_card (add)
   show_stat_card (add)
 
-━━━ CONVERSATIONAL FOLLOW-UPS ━━━
-
-If the user's message is a short clarifying question, a conversational aside, or asks something
-the structural widgets don't cover (and the answer is a 1–4 sentence prose reply), call
-show_text_response(message, source_chunk_ids?) instead of spawning dashboard widgets.
-This is how you deliver text — NEVER emit free assistant text, it won't render.
-Prefer structural widgets whenever the answer has structure (symbols, similar dreams,
-interpretations, patterns).
-
 ━━━ RULES ━━━
 
-- ALWAYS retrieve before spawning (except Flow C self-contained widgets).
-- First widget uses operation='replace_all', rest use operation='add'.
-- Pass source_chunk_ids (array of chunk id integers) on every agent-populated widget.
-- Self-contained widgets (emotional_climate, recurrence_card, heatmap_calendar, dream_streak, top_symbol) take NO args — skip them if the user has no dream history.
-- Never emit free assistant text — use show_text_response for any prose reply. The widgets ARE the response for structured answers.
-- clear_canvas() is only for removing widgets without replacing.
+- First widget of the response: operation='replace_all'. Every widget after: operation='add' (never 'replace_all' — it wipes your own dashboard).
+- Keep spawning — one widget per turn — until the flow's list is done. Don't stop after 1–2.
+- Check `Already-spawned widgets` in the human message. Pick the NEXT widget in the flow; never respawn one that's already there.
+- When the flow is complete, call show_text_response(message="Dashboard ready.") to finish.
+- Every agent-populated widget MUST include source_chunk_ids — copy the actual integer ids shown in "Available chunk IDs" / "Retrieved knowledge" (e.g. [52432, 11234]). Pick the TOP 3 most relevant chunks for this widget (by similarity / topical fit) — never more than 3. Never pass empty [] when chunks exist. Self-contained widgets take no args.
+- Write each widget's prose fields (meaning, subconscious_emotion, life_echo, excerpt, etc.) with 2–4 full sentences of concrete detail drawn directly from the chunk text — quote fragments, name symbols, use specifics. Don't hand-wave.
+- Never emit free text — widgets are the response.
 """
 
-SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", ORCHESTRATOR_PROMPT)
+SYSTEM_PROMPT = os.getenv("SYSTEM_PROMPT", SPAWNER_PROMPT)
 
 
 # ---------------------------------------------------------------------------
-# Orchestrator node
+# Helpers: extract user message + format knowledge blob for spawner
 # ---------------------------------------------------------------------------
 
-async def orchestrator_node(state: OrchestratorState, config):
+def _extract_last_user_text(messages) -> str:
+    """Walk messages in reverse to find the most recent HumanMessage content."""
+    for m in reversed(messages or []):
+        if isinstance(m, HumanMessage):
+            content = m.content
+            if isinstance(content, str):
+                return content
+            if isinstance(content, list):
+                return " ".join(str(c) for c in content)
+    return ""
+
+
+def _format_knowledge(knowledge: dict) -> str:
+    """Compact text view of state.knowledge for injection into the spawner's context."""
+    if not knowledge:
+        return "(no retrieval results)"
+    lines = []
+    for ns, chunks in knowledge.items():
+        if not chunks:
+            lines.append(f"[{ns}] 0 chunks")
+            continue
+        lines.append(f"[{ns}] {len(chunks)} chunks:")
+        for c in chunks:
+            if not isinstance(c, dict):
+                lines.append(f"  - {str(c)[:200]}")
+                continue
+            cid = c.get("id", "?")
+            excerpt = (c.get("content") or c.get("text") or c.get("excerpt") or "")
+            if isinstance(excerpt, str):
+                excerpt = excerpt[:240].replace("\n", " ")
+            sim = c.get("similarity") or c.get("score")
+            extras = c.get("metadata") or {}
+            sim_str = f" sim={sim:.2f}" if isinstance(sim, (int, float)) else ""
+            extra_str = f" meta={extras}" if extras else ""
+            lines.append(f"  - id={cid}{sim_str} {excerpt}{extra_str}")
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Retriever node — classify intent, fetch data, dispatch to spawner
+# ---------------------------------------------------------------------------
+
+async def retriever_node(state: OrchestratorState, config):
     copilotkit_state = state.get("copilotkit", {})
     frontend_actions = copilotkit_state.get("actions", [])
 
+    # Retriever only gets the conversational off-ramp (show_text_response), plus retrieval
+    # backend tools and the dispatch protocol tool. No spawn tools.
+    # text_tools = [a for a in frontend_actions if getattr(a, "name", "") == "show_text_response"]
+    # show_text_response is now backend-registered (see _dumb_widget_tool_map).
+    _text_response_tool = _dumb_widget_tool_map["show_text_response"].spawn_tool
+
+    _kn = state.get("knowledge") or {}
     logger.info(
-        f"[ORCHESTRATOR] messages={len(state.get('messages', []))} "
-        f"frontend={len(frontend_actions)} spawn_tools={len(_spawn_tools)} backend_tools={len(_backend_tools)} "
+        f"[RETRIEVER] messages={len(state.get('messages', []))} "
+        f"frontend={len(frontend_actions)} text_tool=backend "
+        f"retrieval_tools={len(_retrieval_backend_tools)} "
+        f"knowledge_ns={list(_kn.keys())} "
+        f"knowledge_chunk_counts={ {ns: len(v or []) for ns, v in _kn.items()} }"
+    )
+
+    try:
+        from copilotkit.langgraph import copilotkit_customize_config
+        config = copilotkit_customize_config(
+            config,
+            emit_tool_calls=False,
+            emit_intermediate_state=[
+                {"state_key": "knowledge", "tool": "*", "tool_argument": "*"},
+            ],
+        )
+    except ImportError:
+        pass
+
+    all_tools = [_text_response_tool, *retriever_protocol_tools, *_retrieval_backend_tools]
+    llm_with_tools = llm.bind_tools(all_tools)
+
+    messages = [SystemMessage(content=RETRIEVER_PROMPT)] + state["messages"]
+    response = await _invoke_with_repair_and_retry(llm_with_tools, messages, config, "RETRIEVER")
+
+    # ─── Code-level guardrail ────────────────────────────────────────────
+    # Qwen periodically skips the RETRIEVE step — it goes straight to
+    # record_dream or dispatch_to_spawner before any search_dreams runs.
+    # The prompt's "Flow A: search × 3 then record" directive is insufficient.
+    # If state.knowledge is empty AND no prior search_dreams ran in this
+    # thread AND the LLM is trying to record/dispatch, nudge it and retry.
+    _current_knowledge = state.get("knowledge") or {}
+    _prior_search_ran = any(
+        isinstance(m, ToolMessage) and getattr(m, "name", "") == "search_dreams"
+        for m in (state.get("messages") or [])
+    )
+    for _attempt in range(2):
+        tool_calls = getattr(response, "tool_calls", None) or []
+        bad_names = {tc.get("name") for tc in tool_calls} & {"record_dream", "dispatch_to_spawner"}
+        if not bad_names or _current_knowledge or _prior_search_ran:
+            break
+        logger.warning(
+            f"[RETRIEVER] BLOCKING premature {bad_names} — state.knowledge is empty and "
+            f"no search_dreams in history (attempt {_attempt+1}/2). Re-invoking with nudge."
+        )
+        nudge = HumanMessage(content=(
+            "STOP. You attempted to call " + ", ".join(sorted(bad_names)) + " before any "
+            "search_dreams has run. state.knowledge is empty — there is nothing to "
+            "record or dispatch. You MUST call search_dreams FIRST. For a new dream, "
+            "do: search_dreams(<dream text>, 'dream_knowledge', 5). Try again now — "
+            "emit a search_dreams tool call."
+        ))
+        retry_messages = messages + [nudge]
+        response = await _invoke_with_repair_and_retry(
+            llm_with_tools, retry_messages, config, f"RETRIEVER-retry{_attempt+1}"
+        )
+
+    tool_calls = getattr(response, "tool_calls", None) or []
+    invalid_tool_calls = getattr(response, "invalid_tool_calls", None) or []
+    content_preview = (response.content or "")[:200] if isinstance(response.content, str) else str(response.content)[:200]
+    logger.info(
+        f"[RETRIEVER] LLM response: tool_calls={len(tool_calls)} "
+        f"invalid_tool_calls={len(invalid_tool_calls)} "
+        f"content={content_preview!r}"
+    )
+    if tool_calls:
+        for tc in tool_calls:
+            logger.info(f"  tool_call: {tc.get('name')}")
+    if invalid_tool_calls:
+        for itc in invalid_tool_calls:
+            logger.warning(f"  invalid_tool_call: {itc}")
+
+    state_patch: dict = {"messages": [response]}
+    # Dumb widgets now update active_widgets directly in tools_node — no post-hoc sync.
+    # _sync_dumb_widgets(state, state_patch)
+    return state_patch
+
+
+# ---------------------------------------------------------------------------
+# Spawner node — render dashboard from retrieved knowledge
+# ---------------------------------------------------------------------------
+
+async def spawner_node(state: OrchestratorState, config):
+    copilotkit_state = state.get("copilotkit", {})
+    frontend_actions = copilotkit_state.get("actions", [])
+
+    _spawner_kn = state.get("knowledge") or {}
+    logger.info(
+        f"[SPAWNER] frontend={len(frontend_actions)} spawn_tools={len(_spawn_tools)} "
+        f"knowledge_ns={list(_spawner_kn.keys())} "
+        f"knowledge_chunk_counts={ {ns: len(v or []) for ns, v in _spawner_kn.items()} } "
+        f"note={(state.get('note') or '')[:80]!r} "
         f"focused={state.get('focused_agent')} "
         f"active_widgets={[w.get('id') for w in (state.get('active_widgets') or [])]}"
     )
@@ -328,7 +504,7 @@ async def orchestrator_node(state: OrchestratorState, config):
         from copilotkit.langgraph import copilotkit_customize_config
         config = copilotkit_customize_config(
             config,
-            emit_tool_calls=False,  # MCP + skeleton tools handled in tools_node, no CopilotKit interception needed
+            emit_tool_calls=False,
             emit_intermediate_state=[
                 {"state_key": "active_widgets", "tool": "*", "tool_argument": "*"},
                 {"state_key": "widget_state", "tool": "*", "tool_argument": "*"},
@@ -337,22 +513,61 @@ async def orchestrator_node(state: OrchestratorState, config):
     except ImportError:
         pass
 
-    # Bind: frontend (dumb) tools + skeleton tools + spawn tools + standalone backend tools
-    all_tools = [*frontend_actions, *skeleton_tools, *_spawn_tools_with_op, *_backend_tools]
-    llm_with_tools = llm.bind_tools(all_tools)
+    # Dumb widget spawn tools are now backend-registered — frontend_actions are superseded.
+    # all_tools = [*frontend_actions, *skeleton_tools, *_spawn_tools_with_op, *_spawner_backend_tools]
+    _dumb_spawn_tools = [cfg.spawn_tool for cfg in _DUMB_WIDGETS]
+    all_tools = [*_dumb_spawn_tools, *skeleton_tools, *_spawn_tools_with_op, *_spawner_backend_tools]
+    # Force tool emission every turn — otherwise Qwen tends to generate a
+    # multi-line "plan" as prose, burns the token budget, and returns 0 tool
+    # calls which ends the turn prematurely. show_text_response (goto=END) is
+    # in the toolset, so the model still has a valid termination move.
+    llm_with_tools = llm.bind_tools(all_tools, tool_choice="required")
+
+    # Fresh minimal context — do NOT replay retriever's tool-call history.
+    user_msg = _extract_last_user_text(state.get("messages") or [])
+    knowledge = state.get("knowledge") or {}
+    knowledge_blob = _format_knowledge(knowledge)
+    note = state.get("note") or "-"
+    active_ids = [w.get("id") for w in (state.get("active_widgets") or [])]
+    # Explicit per-namespace id list so the model has the exact integers it
+    # must pass through source_chunk_ids. Without this it defaults to [].
+    _avail_ids: dict[str, list] = {}
+    for ns, chunks in knowledge.items():
+        ids = [c.get("id") for c in (chunks or []) if isinstance(c, dict) and c.get("id") is not None]
+        if ids:
+            _avail_ids[ns] = ids
+    avail_ids_line = (
+        ", ".join(f"{ns}={ids}" for ns, ids in _avail_ids.items()) or "(none)"
+    )
+
+    human_content = (
+        f"User: {user_msg}\n\n"
+        f"Available chunk IDs (copy these integers into source_chunk_ids on every "
+        f"agent-populated widget you spawn): {avail_ids_line}\n\n"
+        f"Retrieved knowledge:\n{knowledge_blob}\n\n"
+        f"Retriever note: {note}\n\n"
+        f"Already-spawned widgets (do NOT respawn — pick the NEXT one in the flow, "
+        f"or call show_text_response to finish if the flow is complete): {active_ids}"
+    )
+    logger.info(
+        f"[SPAWNER] human_content bytes={len(human_content)} "
+        f"knowledge_blob_bytes={len(knowledge_blob)} "
+        f"knowledge_blob_head={knowledge_blob[:300]!r}"
+    )
+
+    messages = [SystemMessage(content=SPAWNER_PROMPT), HumanMessage(content=human_content)]
     pending = state.get("pending_agent_message")
-    messages = [SystemMessage(content=SYSTEM_PROMPT)] + state["messages"]
     if pending:
-        from langchain_core.messages import HumanMessage
-        messages = messages + [HumanMessage(content=pending)]
-        logger.info(f"[ORCHESTRATOR] injecting pending message: {pending[:60]}")
-    response = await _invoke_with_repair_and_retry(llm_with_tools, messages, config, "ORCHESTRATOR")
+        messages.append(HumanMessage(content=pending))
+        logger.info(f"[SPAWNER] injecting pending message: {pending[:60]}")
+
+    response = await _invoke_with_repair_and_retry(llm_with_tools, messages, config, "SPAWNER")
 
     tool_calls = getattr(response, "tool_calls", None) or []
     invalid_tool_calls = getattr(response, "invalid_tool_calls", None) or []
     content_preview = (response.content or "")[:200] if isinstance(response.content, str) else str(response.content)[:200]
     logger.info(
-        f"[ORCHESTRATOR] LLM response: tool_calls={len(tool_calls)} "
+        f"[SPAWNER] LLM response: tool_calls={len(tool_calls)} "
         f"invalid_tool_calls={len(invalid_tool_calls)} "
         f"content={content_preview!r}"
     )
@@ -364,11 +579,9 @@ async def orchestrator_node(state: OrchestratorState, config):
         for itc in invalid_tool_calls:
             logger.warning(f"  invalid_tool_call: {itc}")
 
-    # Sync dumb widget state: scan the latest ToolMessages for frontend-tool results
-    # (dumb widgets executed on the client) and upsert them into active_widgets so
-    # the canvas is authoritative even for agent=null widgets.
     state_patch: dict = {"pending_agent_message": None, "messages": [response]}
-    _sync_dumb_widgets(state, state_patch)
+    # Dumb widgets now update active_widgets directly in tools_node — no post-hoc sync.
+    # _sync_dumb_widgets(state, state_patch)
     return state_patch
 
 
@@ -539,29 +752,61 @@ def route_subagent(state: OrchestratorState):
 # Shared tools node — generic, driven by registry
 # ---------------------------------------------------------------------------
 
-async def tools_node(state: OrchestratorState) -> dict:
+from .state import merge_knowledge as _merge_knowledge
+
+
+def _apply_command_update(update: dict, state: OrchestratorState, state_updates: dict, messages: list) -> None:
+    """Merge a Command.update payload into our running state_updates + messages."""
+    update = dict(update or {})
+    cmd_messages = update.pop("messages", []) or []
+    for m in cmd_messages:
+        messages.append(m)
+    for k, v in update.items():
+        if k == "knowledge":
+            # Merge with running updates first, then with current state (handled by reducer on return)
+            running = state_updates.get("knowledge")
+            if running is None:
+                running = dict(state.get("knowledge") or {})
+            state_updates["knowledge"] = _merge_knowledge(running, v)
+        else:
+            state_updates[k] = v
+
+
+async def tools_node(state: OrchestratorState):
     """Unified tool executor. Handles all backend tool calls from any node.
 
-    State-mutating tools are handled inline; domain tools whose return values
-    update widget_state are called and merged generically.
+    Retrieval tools (search_dreams et al.) may return a `Command` that writes into
+    state.knowledge; `dispatch_to_spawner` routes to the spawner node. Other tools
+    return a plain dict which is wrapped into a ToolMessage.
     """
     last = state["messages"][-1]
     tool_names = [tc["name"] for tc in getattr(last, "tool_calls", [])]
     logger.info(f"[TOOLS] entering tools_node — calls: {tool_names} focused={state.get('focused_agent')}")
     messages = []
     state_updates: dict = {}
+    pending_goto: str | None = None
 
     # Pre-fetch all async backend tools concurrently (I/O-bound: search, record, etc.)
+    # Using fn.ainvoke(tc) so InjectedToolCallId / Command pattern work correctly.
     async_results: dict[str, object] = {}
     async_coros = []
     async_tc_ids = []
+    async_tc_names = []
+    # Tools that use InjectedState need `state` passed through their args.
+    # Our custom tools_node bypasses prebuilt ToolNode's auto-injection, so do it here.
+    _STATE_INJECTED_TOOLS = {"record_dream"}
     for tc in last.tool_calls:
         name = tc["name"]
         if name in _backend_tool_map:
             fn = _backend_tool_map[name]
             if fn.coroutine:
-                async_coros.append(fn.coroutine(**tc["args"]))
+                if name in _STATE_INJECTED_TOOLS:
+                    patched_tc = {**tc, "args": {**(tc.get("args") or {}), "state": state}}
+                    async_coros.append(fn.ainvoke(patched_tc))
+                else:
+                    async_coros.append(fn.ainvoke(tc))
                 async_tc_ids.append(tc["id"])
+                async_tc_names.append(name)
     if async_coros:
         logger.info(f"[TOOLS] running {len(async_coros)} async backend tools in parallel")
         results = await asyncio.gather(*async_coros, return_exceptions=True)
@@ -576,13 +821,38 @@ async def tools_node(state: OrchestratorState) -> dict:
             result = async_results[tc["id"]]
             if isinstance(result, BaseException):
                 logger.error(f"[TOOLS] async backend '{name}' failed: {result}")
-                result = {"error": str(result)}
+                messages.append(ToolMessage(
+                    content=json.dumps({"error": str(result)}),
+                    tool_call_id=tc["id"], name=name,
+                ))
+            elif isinstance(result, Command):
+                upd = result.update or {}
+                # Expand knowledge payload so we can SEE what search_dreams
+                # actually handed back before the reducer merges it.
+                kn_in_update = upd.get("knowledge") or {}
+                kn_summary = {ns: len(v or []) for ns, v in kn_in_update.items()} if kn_in_update else {}
+                logger.info(
+                    f"[TOOLS] backend '{name}' → Command update_keys={list(upd.keys())} "
+                    f"knowledge_in_update={kn_summary} goto={result.goto}"
+                )
+                _apply_command_update(upd, state, state_updates, messages)
+                # After merge, show the running state_updates knowledge so we
+                # can confirm the reducer absorbed this batch.
+                running_kn = state_updates.get("knowledge") or state.get("knowledge") or {}
+                logger.info(
+                    f"[TOOLS] backend '{name}' → post-merge state.knowledge={ {ns: len(v or []) for ns, v in running_kn.items()} }"
+                )
+                if result.goto:
+                    pending_goto = result.goto
+            elif isinstance(result, ToolMessage):
+                logger.info(f"[TOOLS] backend '{name}' → ToolMessage content={str(result.content)[:100]}")
+                messages.append(result)
             else:
                 logger.info(f"[TOOLS] backend '{name}' → result={str(result)[:100]}")
-            messages.append(ToolMessage(
-                content=json.dumps(result) if isinstance(result, dict) else str(result),
-                tool_call_id=tc["id"], name=name,
-            ))
+                messages.append(ToolMessage(
+                    content=json.dumps(result) if isinstance(result, dict) else str(result),
+                    tool_call_id=tc["id"], name=name,
+                ))
             continue
 
         if name == "clear_canvas":
@@ -631,15 +901,106 @@ async def tools_node(state: OrchestratorState) -> dict:
                 tool_call_id=tc["id"], name=name,
             ))
 
+        elif name in _dumb_widget_tool_map:
+            cfg = _dumb_widget_tool_map[name]
+            args = dict(tc["args"])
+            operation = args.pop("operation", "add")
+            # Auto-fill source_chunk_ids from state.knowledge when the LLM
+            # forgot / hallucinated. Qwen repeatedly passes [] here despite
+            # explicit prompt + schema instructions. Normalise dict/str shapes
+            # too so the frontend's parseChunkIds() gets pure ints.
+            if "source_chunk_ids" in args:
+                raw = args.get("source_chunk_ids")
+                normalised: list[int] = []
+                if isinstance(raw, list):
+                    for item in raw:
+                        if isinstance(item, int):
+                            normalised.append(item)
+                        elif isinstance(item, dict) and isinstance(item.get("id"), int):
+                            normalised.append(item["id"])
+                        elif isinstance(item, str) and item.isdigit():
+                            normalised.append(int(item))
+                if not normalised:
+                    # Pull top-3 by similarity from state.knowledge. Chunks are
+                    # already stored in descending sim order by search_dreams,
+                    # but sort explicitly in case of interleaved namespaces.
+                    kn = state.get("knowledge") or {}
+                    pool: list[tuple[float, int]] = []
+                    for _ns, _chunks in kn.items():
+                        for c in (_chunks or []):
+                            if not isinstance(c, dict) or not isinstance(c.get("id"), int):
+                                continue
+                            sim = c.get("similarity") or c.get("score") or 0.0
+                            if not isinstance(sim, (int, float)):
+                                sim = 0.0
+                            pool.append((float(sim), c["id"]))
+                    pool.sort(key=lambda x: x[0], reverse=True)
+                    fallback = [cid for _s, cid in pool[:3]]
+                    if fallback:
+                        logger.warning(
+                            f"[TOOLS] dumb widget '{name}' passed empty source_chunk_ids — "
+                            f"auto-filling top-3 from state.knowledge: {fallback}"
+                        )
+                        normalised = fallback
+                # Cap explicit ids too — if LLM over-cites, trim to 3.
+                if len(normalised) > 3:
+                    logger.info(
+                        f"[TOOLS] dumb widget '{name}' cited {len(normalised)} ids — "
+                        f"trimming to top-3: {normalised[:3]}"
+                    )
+                    normalised = normalised[:3]
+                args["source_chunk_ids"] = normalised
+            new_widget = {"id": cfg.id, "type": "dumb", "props": args}
+            current_active = list(state_updates.get("active_widgets", state.get("active_widgets") or []))
+            # Safeguard: mid-dashboard replace_all would wipe every card the
+            # spawner just rendered. If there are already widgets on the canvas
+            # at the start of this tool call, downgrade replace_all → add.
+            if operation == "replace_all" and current_active:
+                logger.warning(
+                    f"[TOOLS] dumb widget '{name}' requested replace_all but canvas "
+                    f"already has {[w['id'] for w in current_active]} — downgrading to 'add' "
+                    f"to prevent mid-spawn wipe."
+                )
+                operation = "add"
+            if operation == "replace_all":
+                state_updates["active_widgets"] = [new_widget]
+            elif operation == "replace_one":
+                state_updates["active_widgets"] = [w for w in current_active if w["id"] != cfg.id] + [new_widget]
+            else:  # add
+                if not any(w["id"] == cfg.id for w in current_active):
+                    current_active.append(new_widget)
+                state_updates["active_widgets"] = current_active
+            _sci = args.get("source_chunk_ids")
+            logger.info(
+                f"[TOOLS] dumb widget '{name}' → id={cfg.id} operation={operation} "
+                f"goto={cfg.goto} source_chunk_ids={_sci} arg_keys={list(args.keys())}"
+            )
+            messages.append(ToolMessage(
+                content=json.dumps({"spawned": True, "widgetId": cfg.id, "operation": operation}),
+                tool_call_id=tc["id"], name=name,
+            ))
+            if cfg.goto:
+                pending_goto = cfg.goto
+
         elif name == "handoff_to_orchestrator":
             prev_agent = state.get("focused_agent")
             summary = tc["args"].get("summary", "")
             state_updates["focused_agent"] = None
             if summary:
                 state_updates["pending_agent_message"] = f"[Handoff from {prev_agent}]: {summary}"
-            logger.info(f"[TOOLS] handoff_to_orchestrator: {prev_agent} → orchestrator summary={bool(summary)}")
+            logger.info(f"[TOOLS] handoff_to_orchestrator: {prev_agent} → retriever summary={bool(summary)}")
             messages.append(ToolMessage(
                 content=json.dumps({"status": "handing_off"}),
+                tool_call_id=tc["id"], name=name,
+            ))
+
+        elif name == "dispatch_to_spawner":
+            note = tc["args"].get("note", "") or ""
+            state_updates["note"] = note
+            pending_goto = "spawner"
+            logger.info(f"[TOOLS] dispatch_to_spawner note={note[:80]!r} → routing to spawner")
+            messages.append(ToolMessage(
+                content=json.dumps({"status": "dispatching", "note": note}),
                 tool_call_id=tc["id"], name=name,
             ))
 
@@ -674,7 +1035,28 @@ async def tools_node(state: OrchestratorState) -> dict:
                 tool_call_id=tc["id"], name=name,
             ))
 
-    return {**state_updates, "messages": messages}
+    # Always route via Command. Previously the graph also registered
+    # conditional_edges on "tools" which caused LangGraph to fan the tools
+    # node out into two parallel branches (spawner from Command.goto AND
+    # retriever from the edge), producing double AIMessages and eventually
+    # HTTP 400 from the chat API. Compute routing here and never return a
+    # plain dict.
+    if pending_goto is None:
+        # Determine fallback: smart-spawn → END/subagent; focused subagent → subagent;
+        # otherwise retriever (search/record/etc.).
+        call_names = [tc.get("name") for tc in last.tool_calls]
+        focused = state_updates.get("focused_agent", state.get("focused_agent"))
+        if any(n in _spawn_tool_map for n in call_names):
+            if state_updates.get("pending_agent_message") and focused and focused in _registry:
+                pending_goto = focused
+            else:
+                pending_goto = END
+        elif focused and focused in _registry:
+            pending_goto = focused
+        else:
+            pending_goto = "retriever"
+    logger.info(f"[TOOLS] exiting → {pending_goto}")
+    return Command(update={**state_updates, "messages": messages}, goto=pending_goto)
 
 
 # ---------------------------------------------------------------------------
@@ -686,29 +1068,41 @@ def route_entry(state: OrchestratorState):
     if focused and focused in _registry:
         logger.info(f"[ENTRY] resuming subagent '{focused}'")
         return focused
-    return "orchestrator"
+    return "retriever"
 
 
 def route_after_tools(state: OrchestratorState):
-    # Detect if we just ran a spawn tool
+    """Fallback router invoked only when tools_node returned a plain dict (no Command.goto).
+
+    Dispatch-to-spawner paths are handled by the Command returned from tools_node directly
+    and never hit this function.
+    """
     messages = state["messages"]
+
+    # Find the most recent AI tool-call batch
+    last_tool_calls = None
     for msg in reversed(messages):
         if hasattr(msg, "tool_calls") and msg.tool_calls:
-            if any(tc.get("name") in _spawn_tool_map for tc in msg.tool_calls):
-                focused = state.get("focused_agent")
-                if state.get("pending_agent_message") and focused and focused in _registry:
-                    logger.info(f"[TOOLS] spawn + intro → subagent '{focused}' for greeting")
-                    return focused
-                logger.info("[TOOLS] spawn complete → END (subagent activates next turn)")
-                return END
+            last_tool_calls = msg.tool_calls
             break
+
+    if last_tool_calls:
+        names = [tc.get("name") for tc in last_tool_calls]
+        # Spawn tool just fired → end the turn (subagent activates next turn if intro pending)
+        if any(n in _spawn_tool_map for n in names):
+            focused = state.get("focused_agent")
+            if state.get("pending_agent_message") and focused and focused in _registry:
+                logger.info(f"[TOOLS] spawn + intro → subagent '{focused}' for greeting")
+                return focused
+            logger.info("[TOOLS] spawn complete → END (subagent activates next turn)")
+            return END
 
     focused = state.get("focused_agent")
     if focused and focused in _registry:
         logger.info(f"[TOOLS] → subagent '{focused}'")
         return focused
-    logger.info("[TOOLS] → orchestrator")
-    return "orchestrator"
+    logger.info("[TOOLS] → retriever (default fallback)")
+    return "retriever"
 
 
 # ---------------------------------------------------------------------------
@@ -718,7 +1112,8 @@ def route_after_tools(state: OrchestratorState):
 def create_graph():
     workflow = StateGraph(OrchestratorState)
 
-    workflow.add_node("orchestrator", orchestrator_node)
+    workflow.add_node("retriever", retriever_node)
+    workflow.add_node("spawner", spawner_node)
     workflow.add_node("tools", tools_node)
 
     subagent_ids = list(_registry.keys())
@@ -731,19 +1126,24 @@ def create_graph():
             END: END,
         })
 
-    # Entry: resume active subagent or go to orchestrator
-    entry_targets = {"orchestrator": "orchestrator", **{sid: sid for sid in subagent_ids}}
+    # Entry: resume active subagent or go to retriever (new default)
+    entry_targets = {"retriever": "retriever", **{sid: sid for sid in subagent_ids}}
     workflow.add_conditional_edges(START, route_entry, entry_targets)
 
-    # Orchestrator: backend call → tools, else → END
-    workflow.add_conditional_edges("orchestrator", route_orchestrator, {
+    # Retriever + Spawner: tool call → tools, else → END
+    workflow.add_conditional_edges("retriever", route_orchestrator, {
+        "tools": "tools",
+        END: END,
+    })
+    workflow.add_conditional_edges("spawner", route_orchestrator, {
         "tools": "tools",
         END: END,
     })
 
-    # After tools: route to active subagent, back to orchestrator, or END (after spawn)
-    after_targets = {"orchestrator": "orchestrator", END: END, **{sid: sid for sid in subagent_ids}}
-    workflow.add_conditional_edges("tools", route_after_tools, after_targets)
+    # tools_node now always returns Command(goto=...) — routing is fully
+    # self-contained. Adding conditional_edges on "tools" would fan the node
+    # out into two concurrent branches (Command.goto + edge target),
+    # producing double AIMessages the chat API rejects with HTTP 400.
 
     return workflow.compile(
         checkpointer=MemorySaver(),

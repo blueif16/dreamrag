@@ -114,9 +114,9 @@ export default function TopSymbol({
               marginTop: 6,
             }}
           >
-            {safeCoocs.map((c) => (
+            {safeCoocs.map((c, i) => (
               <span
-                key={c.label}
+                key={`${i}:${c?.label ?? ""}`}
                 style={{
                   background: "rgba(107,95,165,0.06)",
                   border: "1px solid rgba(107,95,165,0.12)",

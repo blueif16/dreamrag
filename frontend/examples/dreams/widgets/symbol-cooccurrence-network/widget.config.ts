@@ -5,7 +5,7 @@ const config: WidgetConfig = {
   tool: {
     name: "show_symbol_cooccurrence_network",
     description:
-      "Show a symbol co-occurrence network graph. Central symbol node with connected symbols sized by edge weight, plus a text summary of connections. [Layout: half width, tall height]",
+      "Show a ranked list of symbols that co-occur with a central symbol. Each row renders as a weighted bar with a percentage. [Layout: half width, medium height]",
     parameters: {
       center_symbol: { type: "string", description: "The central symbol, e.g. 'Water'" },
       nodes: {
@@ -15,7 +15,7 @@ const config: WidgetConfig = {
     },
   },
   agent: null,
-  layout: { width: "half", height: "tall" },
+  layout: { width: "half", height: "medium" },
 };
 
 export default config;

@@ -293,6 +293,16 @@ docker --context gcp-dreamrag compose up -d --build
 
 The backend reads `frontend/backend/.env` for Supabase creds and overrides `EMBED_BASE_URL` / LLM settings to point to the in-compose service hostnames (`chat-model`, `embed-model`).
 
+### Live VM (current)
+
+- **IP**: `35.231.190.210` — docker context `gcp-dreamrag` (ssh://tk@35.231.190.210)
+- **Endpoints** (firewall rule `dreamrag-llm-ports` opens 8081/8082 to 0.0.0.0/0):
+  - Frontend: `http://35.231.190.210:3000`
+  - Backend: `http://35.231.190.210:8000`
+  - Chat LLM: `http://35.231.190.210:8081/v1` (model alias `qwen3.6-35b-a3b`)
+  - Embed: `http://35.231.190.210:8082/v1` (model alias `qwen3-embedding-0.6b`, dim 1024)
+- **Local dev → remote LLM**: set in `backend/.env` → `LLM_PROVIDER=openai`, `OPENAI_BASE_URL=http://35.231.190.210:8081/v1`, `OPENAI_API_KEY=not-needed`, `OPENAI_MODEL=qwen3.6-35b-a3b`, `EMBED_BASE_URL=http://35.231.190.210:8082/v1`, `EMBED_MODEL=qwen3-embedding-0.6b`.
+
 ### Useful commands (run while on gcp-dreamrag context)
 ```bash
 docker compose logs -f backend        # tail backend logs

@@ -22,7 +22,7 @@ export default function RecurrenceCard() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/api/user-profile?user_id=default")
+    fetch("/api/user-profile?user_id=demo_dreamer")
       .then((r) => r.json())
       .then((d) => {
         if (Array.isArray(d.recurrence) && d.recurrence.length > 0) {
@@ -94,7 +94,7 @@ export default function RecurrenceCard() {
 
             return (
               <div
-                key={item.label}
+                key={`${i}:${item?.label ?? ""}`}
                 style={{
                   display: "flex",
                   alignItems: "center",

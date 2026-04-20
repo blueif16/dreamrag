@@ -18,7 +18,7 @@ interface Profile {
 }
 
 const EMPTY: Profile = {
-  user_id: "default",
+  user_id: "demo_dreamer",
   emotion_distribution: [],
   recurrence: [],
   current_streak: 0,
@@ -30,6 +30,14 @@ const EMPTY: Profile = {
 
 const DAYS = ["M", "T", "W", "T", "F", "S", "S"];
 const WEEKDAY_NAMES = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
+
+function formatUsername(user_id: string): string {
+  return user_id
+    .split(/[_\s-]+/)
+    .filter(Boolean)
+    .map(w => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(" ");
+}
 
 /* ─────────────────────────────────────────────────────────────────────────────
    Data-driven inferences — all derived from actual user_profiles fields
@@ -121,7 +129,7 @@ export default function ProfilePage() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetch("/api/user-profile?user_id=default")
+    fetch("/api/user-profile?user_id=demo_dreamer")
       .then((r) => r.json())
       .then((d: Profile) => { setProfile(d); setLoading(false); })
       .catch(() => { setProfile(EMPTY); setLoading(false); });
@@ -178,11 +186,11 @@ export default function ProfilePage() {
             {/* ── Hero (5 col) — emotion-colored signature + live summaries ── */}
             <article style={{ ...glass, ...heroGlass, gridColumn: "span 5", minHeight: 340 }}>
               <div style={inner}>
-                <div style={{ display: "grid", gap: 4 }}>
-                  <small style={{ ...summaryLbl, margin: 0 }}>{p.user_id}</small>
-                  <h2 style={heroName}>
-                    {p.total_dreams} {p.total_dreams === 1 ? "dream" : "dreams"}
-                  </h2>
+                <div style={{ display: "grid", gap: 6 }}>
+                  <h2 style={heroName}>{formatUsername(p.user_id)}</h2>
+                  <small style={heroSubtle}>
+                    {p.total_dreams} {p.total_dreams === 1 ? "dream" : "dreams"} recorded
+                  </small>
                 </div>
                 <div style={twoCol}>
                   <SummaryCard
@@ -509,7 +517,9 @@ const eyebrowChip: React.CSSProperties = {
 const eyebrowDot: React.CSSProperties = { width: 7, height: 7, borderRadius: 999, background: "linear-gradient(180deg, #b6d5ff, #6b75d4)", flexShrink: 0 };
 
 /* ── Hero ── */
-const heroName: React.CSSProperties = { margin: 0, fontFamily: '"Cormorant Garamond", serif', fontWeight: 600, fontSize: "2.8rem", lineHeight: 0.94, letterSpacing: "-0.03em", color: "#403852" };
+const heroName: React.CSSProperties = { margin: 0, fontFamily: '"Cormorant Garamond", serif', fontWeight: 600, fontSize: "clamp(2.8rem, 3.4vw, 4rem)", lineHeight: 0.94, letterSpacing: "-0.03em", color: "#403852" };
+
+const heroSubtle: React.CSSProperties = { fontSize: "0.9rem", color: "rgba(64, 56, 82, 0.55)", letterSpacing: "0.02em" };
 
 const twoCol: React.CSSProperties = { display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 14 };
 

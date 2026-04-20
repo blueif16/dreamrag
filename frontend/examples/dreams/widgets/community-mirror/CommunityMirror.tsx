@@ -102,15 +102,16 @@ export default function CommunityMirror({ symbol, snippets: rawSnippets }: Props
             {/* Emotion pills */}
             {s.emotions && s.emotions.length > 0 && (
               <div style={{ display: "flex", gap: 5, flexWrap: "wrap" as const, marginTop: 6 }}>
-                {s.emotions.map((e) => {
-                  const ec = EMOTION_COLORS[e.toLowerCase()] ?? { bg: "rgba(138,127,160,0.10)", color: "#8a7fa0" };
+                {s.emotions.map((e, ei) => {
+                  const emoStr = typeof e === "string" ? e : String((e as any)?.label ?? (e as any)?.name ?? "");
+                  const ec = EMOTION_COLORS[emoStr.toLowerCase()] ?? { bg: "rgba(138,127,160,0.10)", color: "#8a7fa0" };
                   return (
-                    <span key={e} style={{
+                    <span key={`${ei}:${emoStr}`} style={{
                       fontSize: 10, fontWeight: 500, padding: "2px 8px",
                       borderRadius: 99, background: ec.bg, color: ec.color,
                       letterSpacing: "0.03em",
                     }}>
-                      {e}
+                      {emoStr}
                     </span>
                   );
                 })}

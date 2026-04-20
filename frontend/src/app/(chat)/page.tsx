@@ -1050,8 +1050,8 @@ const cloudWrapperStyle: React.CSSProperties = {
   top: "56%",
   transform:
     "translate(-50%, -50%) translateY(var(--cloud-scroll-y, 0vh)) scale(var(--cloud-scroll-scale, 1))",
-  width: "min(42vw, 540px)",
-  height: "min(42vw, 540px)",
+  width: "min(33.6vw, 432px)",
+  height: "min(33.6vw, 432px)",
   zIndex: 1,
   pointerEvents: "none",
   opacity: 0,

@@ -24,15 +24,21 @@ export default function Page() {
   const copilotRef = useRef(copilotkit);
   agentRef.current = agent;
   copilotRef.current = copilotkit;
-  const [isLoading, setIsLoading] = useState(false);
+  // Single source of truth: we've committed to a run but widgets haven't arrived yet.
+  // Lazy init from sessionStorage so the very first frame is already loading —
+  // no EmptyState flash between mount and the auto-send effect.
+  const [awaiting, setAwaiting] = useState(() =>
+    typeof window !== "undefined" && !!sessionStorage.getItem("dreamrag_dream")
+  );
   const [lastUserMessage, setLastUserMessage] = useState("");
-  const [activeTool, setActiveTool] = useState<string | null>(null);
+  const [steps, setSteps] = useState<Step[]>([]);
+  const seenToolCallIds = useRef<Set<string>>(new Set());
+  const seenToolResultIds = useRef<Set<string>>(new Set());
 
   // Auto-send dream from landing page — runs once on mount
   useEffect(() => {
     const stored = sessionStorage.getItem("dreamrag_dream");
     if (!stored) return;
-    setIsLoading(true);
     setLastUserMessage(stored);
     console.log("[dreamrag] found dream in sessionStorage:", stored);
 
@@ -51,7 +57,7 @@ export default function Page() {
       ag.addMessage({ id: randomUUID(), role: "user", content: stored });
       ck.runAgent({ agent: ag }).catch((err: unknown) => {
         console.error("[dreamrag] runAgent failed:", err);
-        setIsLoading(false);
+        setAwaiting(false);
       });
     }, 150);
 
@@ -59,47 +65,74 @@ export default function Page() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Track agent running state for loading
-  useEffect(() => {
-    if (spawned.length > 0) setIsLoading(false);
-  }, [spawned]);
-
-  // Surface the latest tool call name to drive the status strip.
+  // Walk every message: newly-seen tool_calls become running steps; newly-seen
+  // ToolMessages flip their matching step to done. Refs dedupe across ticks so
+  // streaming updates and past-run history don't spawn duplicates.
   useEffect(() => {
     const { unsubscribe } = agent.subscribe({
       onMessagesChanged: ({ messages }) => {
-        const last = messages[messages.length - 1] as any;
-        if (last?.role !== "assistant") return;
-        const toolCalls = last.tool_calls ?? last.toolCalls;
-        if (Array.isArray(toolCalls) && toolCalls.length > 0) {
-          const lastCall = toolCalls[toolCalls.length - 1];
-          const name = lastCall?.function?.name ?? lastCall?.name ?? null;
-          if (name) setActiveTool(name);
+        const additions: Step[] = [];
+        const completions: string[] = [];
+        for (const m of messages as any[]) {
+          const tcs = m?.tool_calls ?? m?.toolCalls;
+          if (Array.isArray(tcs)) {
+            for (const tc of tcs) {
+              const id = tc?.id;
+              if (!id || seenToolCallIds.current.has(id)) continue;
+              const name = tc?.function?.name ?? tc?.name ?? null;
+              if (!name) continue;
+              const rawArgs = tc?.function?.arguments ?? tc?.args ?? {};
+              const args = typeof rawArgs === "string" ? safeParseJSON(rawArgs) : rawArgs;
+              const step = stepFromCall(id, name, args);
+              if (step === "wait") continue; // args still streaming — retry next tick
+              seenToolCallIds.current.add(id);
+              if (step) additions.push(step);
+            }
+          }
+          const isResult = m?.role === "tool" || m?.type === "tool";
+          const tcId = m?.tool_call_id ?? m?.toolCallId ?? null;
+          if (isResult && tcId && !seenToolResultIds.current.has(tcId)) {
+            seenToolResultIds.current.add(tcId);
+            completions.push(tcId);
+          }
         }
+        if (additions.length === 0 && completions.length === 0) return;
+        setSteps((prev) => {
+          let next = additions.length ? [...prev, ...additions] : prev;
+          if (completions.length) {
+            const done = new Set(completions);
+            next = next.map((s) => (done.has(s.id) ? { ...s, status: "done" as const } : s));
+          }
+          return next;
+        });
       },
     });
     return unsubscribe;
   }, [agent]);
 
-  // Clear status strip when run ends. Only drop isLoading on a real
-  // true→false transition — otherwise this effect fires on mount and
-  // immediately overrides setIsLoading(true) from the sessionStorage path.
   const isRunning = agent.isRunning;
-  const hasRunStartedRef = useRef(false);
+
+  // Authoritative end signal: onRunFinalized fires once per run (success or failure).
+  // Using this instead of watching isRunning toggle avoids the mount-time false→false
+  // no-op and the race where isRunning flips before widgets arrive via onStateChanged.
   useEffect(() => {
-    if (isRunning) {
-      hasRunStartedRef.current = true;
-    } else {
-      setActiveTool(null);
-      if (hasRunStartedRef.current) setIsLoading(false);
-    }
-  }, [isRunning]);
+    const { unsubscribe } = agent.subscribe({
+      onRunFinalized: () => {
+        setAwaiting(false);
+      },
+      onRunFailed: () => {
+        setAwaiting(false);
+      },
+    });
+    return unsubscribe;
+  }, [agent]);
 
   useEffect(() => {
     const { unsubscribe } = agent.subscribe({
       onStateChanged: ({ state: s }) => {
         const activeWidgets: ActiveWidget[] = (s as any).active_widgets ?? [];
         const widgetState: Record<string, any> = (s as any).widget_state ?? {};
+        const knowledge: Record<string, any[]> = (s as any).knowledge ?? {};
 
         const nextSpawned = activeWidgets
           .map((aw) => {
@@ -121,6 +154,23 @@ export default function Page() {
           expectedDumbIds.current = new Set();
         }
         setSpawned(nextSpawned);
+        if (nextSpawned.length > 0) setAwaiting(false);
+
+        // Annotate retriever search steps with actual result counts from state.knowledge
+        // so users see "5 passages" / "first entry" instead of a bare checkmark.
+        setSteps((prev) => {
+          let changed = false;
+          const updated = prev.map((step) => {
+            if (!step.namespace) return step;
+            const chunks = knowledge[step.namespace];
+            if (!Array.isArray(chunks)) return step;
+            const detail = detailForNamespace(step.namespace, chunks.length);
+            if (step.detail === detail) return step;
+            changed = true;
+            return { ...step, detail };
+          });
+          return changed ? updated : prev;
+        });
       },
     });
     return unsubscribe;
@@ -150,9 +200,9 @@ export default function Page() {
     if (!input.trim() || isRunning) return;
     const text = input;
     setLastUserMessage(text);
-    setActiveTool(null);
+    setSteps([]);
     setInput("");
-    setIsLoading(true);
+    setAwaiting(true);
     replaceAllGuard.current = false;
     agent.addMessage({ id: randomUUID(), role: "user", content: text });
     copilotkit.runAgent({ agent });
@@ -182,28 +232,34 @@ export default function Page() {
         {/* Shared nav */}
         <NavShell />
 
-        {/* Page label */}
-        <section style={pageLabelStyle}>
-          <small style={pageLabelSmallStyle}>Dashboard</small>
-          <h1 style={pageLabelH1Style}>The dream is open now.</h1>
-        </section>
+        {/* Scrollable content area — page label + widget grid scroll inside
+            this container so the input pill stays fixed and the page height
+            never changes. */}
+        <div style={scrollAreaStyle}>
+          {/* Page label */}
+          <section style={pageLabelStyle}>
+            <small style={pageLabelSmallStyle}>Dashboard</small>
+            <h1 style={pageLabelH1Style}>The dream is open now.</h1>
+          </section>
 
-        {/* Widget grid or loading skeleton */}
-        <div style={gridWrapStyle}>
-          {lastUserMessage && (hasWidgets || isRunning || isLoading) && (
-            <div style={userQuestionStyle}>
-              <span style={userQuestionLabelStyle}>You asked</span>
-              <span style={userQuestionTextStyle}>{lastUserMessage}</span>
-            </div>
-          )}
-          {(isRunning || isLoading) && <StatusStrip toolName={activeTool} />}
-          {hasWidgets ? (
-            <WidgetPanel spawned={spawned} />
-          ) : isRunning || isLoading ? (
-            <SkeletonCards />
-          ) : (
-            <EmptyState />
-          )}
+          {/* Widget grid or loading skeleton */}
+          <div style={gridWrapStyle}>
+            {lastUserMessage && (hasWidgets || awaiting) && (
+              <div style={userQuestionStyle}>
+                <span style={userQuestionLabelStyle}>You asked</span>
+                <span style={userQuestionTextStyle}>{lastUserMessage}</span>
+              </div>
+            )}
+            {(awaiting || isRunning) && steps.length > 0 && <Checklist steps={steps} />}
+            {awaiting && steps.length === 0 && <StatusStrip />}
+            {hasWidgets ? (
+              <WidgetPanel spawned={spawned} />
+            ) : awaiting ? (
+              <SkeletonCards />
+            ) : (
+              <EmptyState />
+            )}
+          </div>
         </div>
 
         {/* Input-focus backdrop — dims canvas, only input area stays above */}
@@ -225,17 +281,17 @@ export default function Page() {
               pointerEvents: inputFocused ? "auto" : "none",
               transition: "opacity 0.25s cubic-bezier(0.4, 0, 0.2, 1), transform 0.25s cubic-bezier(0.4, 0, 0.2, 1)",
             }}>
-              {followupPrompts.map((p) => (
+              {followupPrompts.map((p, i) => (
                 <button
-                  key={p}
+                  key={`${i}:${p}`}
                   type="button"
                   style={promptTagStyle}
                   onClick={() => {
                     setInput(p);
                     setInputFocused(false);
                     setLastUserMessage(p);
-                    setActiveTool(null);
-                    setIsLoading(true);
+                    setSteps([]);
+                    setAwaiting(true);
                     // Auto-send the prompt
                     replaceAllGuard.current = false;
                     agent.addMessage({ id: randomUUID(), role: "user", content: p });
@@ -346,9 +402,17 @@ function SkeletonCards() {
 // Status strip — live indicator during agent runs, driven by tool calls
 // ---------------------------------------------------------------------------
 
-const TOOL_LABELS: Record<string, string> = {
+type Step = {
+  id: string;
+  label: string;
+  status: "running" | "done";
+  namespace?: "dream_knowledge" | "community_dreams" | "user_default_dreams";
+  detail?: string;
+};
+
+const SPAWN_LABELS: Record<string, string> = {
   show_current_dream: "Interpreting your dream",
-  show_community_mirror: "Searching the dream archive",
+  show_community_mirror: "Gathering similar dreams",
   show_dream_atmosphere: "Mapping the symbolic constellation",
   show_echoes_card: "Finding literary echoes",
   show_followup_chat: "Composing follow-up threads",
@@ -358,28 +422,89 @@ const TOOL_LABELS: Record<string, string> = {
   show_interpretation_synthesis: "Synthesizing interpretations",
   show_recurrence_card: "Checking for recurrent patterns",
   show_dream_streak: "Tracking your dream streak",
-  show_textbook_card: "Consulting dream theory",
+  show_textbook_card: "Pulling theory passages",
   show_top_symbol: "Surfacing a central symbol",
   show_stat_card: "Computing statistics",
   show_symbol_cooccurrence_network: "Tracing symbol co-occurrences",
-  show_text_response: "Composing a reply",
-  clear_canvas: "Clearing the canvas",
 };
 
-function StatusStrip({ toolName }: { toolName: string | null }) {
-  const label = (toolName && TOOL_LABELS[toolName]) ?? "Reflecting on your dream";
+function safeParseJSON(s: string): any {
+  try { return JSON.parse(s); } catch { return {}; }
+}
+
+function stepFromCall(id: string, name: string, args: any): Step | "wait" | null {
+  if (name === "search_dreams") {
+    const ns = args?.namespace as Step["namespace"] | undefined;
+    if (!ns) return "wait"; // namespace may still be streaming
+    return {
+      id,
+      status: "running",
+      namespace: ns,
+      label:
+        ns === "dream_knowledge" ? "Consulting dream theory" :
+        ns === "community_dreams" ? "Searching similar dreams" :
+        ns === "user_default_dreams" ? "Reviewing your dream archive" :
+        "Searching dream corpus",
+    };
+  }
+  if (name === "record_dream") return { id, label: "Recording this dream to your archive", status: "running" };
+  if (name === "get_symbol_graph") return { id, label: "Tracing symbol connections", status: "running" };
+  if (name === "dispatch_to_spawner") return null;
+  if (name === "clear_canvas") return null;
+  if (name === "show_text_response") return null;
+  const label = SPAWN_LABELS[name];
+  if (!label) return null;
+  return { id, label, status: "running" };
+}
+
+function detailForNamespace(ns: NonNullable<Step["namespace"]>, count: number): string {
+  if (count === 0) {
+    return ns === "user_default_dreams" ? "first entry" : "no matches";
+  }
+  if (ns === "dream_knowledge") return `${count} passages`;
+  if (ns === "community_dreams") return `${count} matches`;
+  return `${count} past entries`;
+}
+
+function Checklist({ steps }: { steps: Step[] }) {
   return (
-    <div style={statusStripStyle}>
-      <span style={statusDotStyle} />
-      <span key={label} style={statusLabelStyle}>{label}…</span>
+    <div style={checklistStyle}>
+      {steps.map((s) => (
+        <div key={s.id} style={checklistItemStyle}>
+          {s.status === "done" ? (
+            <svg width="12" height="12" viewBox="0 0 12 12" style={{ flexShrink: 0 }}>
+              <path d="M2.5 6.5l2.2 2.2L9.5 3.5" stroke="#7e87df" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" fill="none" />
+            </svg>
+          ) : (
+            <span style={statusDotStyle} />
+          )}
+          <span style={statusLabelStyle}>{s.label}</span>
+          {s.detail && <span style={checklistDetailStyle}>{s.detail}</span>}
+        </div>
+      ))}
       <style>{`
         @keyframes status-pulse {
           0%, 100% { opacity: 0.45; transform: scale(0.88); }
           50% { opacity: 1; transform: scale(1.18); }
         }
-        @keyframes status-label-in {
-          from { opacity: 0; transform: translateX(-4px); }
+        @keyframes checklist-item-in {
+          from { opacity: 0; transform: translateX(-6px); }
           to { opacity: 1; transform: translateX(0); }
+        }
+      `}</style>
+    </div>
+  );
+}
+
+function StatusStrip() {
+  return (
+    <div style={statusStripStyle}>
+      <span style={statusDotStyle} />
+      <span style={statusLabelStyle}>Reflecting on your dream…</span>
+      <style>{`
+        @keyframes status-pulse {
+          0%, 100% { opacity: 0.45; transform: scale(0.88); }
+          50% { opacity: 1; transform: scale(1.18); }
         }
       `}</style>
     </div>
@@ -413,7 +538,8 @@ function EmptyState() {
 
 const shellBg: React.CSSProperties = {
   position: "relative",
-  minHeight: "100dvh",
+  height: "100dvh",
+  width: "100%",
   fontFamily: '"Manrope", sans-serif',
   color: "#403852",
   background: `
@@ -423,6 +549,14 @@ const shellBg: React.CSSProperties = {
     radial-gradient(circle at 28% 74%, rgba(203, 224, 255, 0.7), transparent 22%),
     linear-gradient(160deg, #f8f4ee 0%, #f2edf7 46%, #fbf7f0 100%)
   `,
+  overflow: "hidden",
+};
+
+const scrollAreaStyle: React.CSSProperties = {
+  position: "relative",
+  zIndex: 1,
+  height: "100%",
+  overflowY: "auto",
   overflowX: "hidden",
 };
 
@@ -661,7 +795,30 @@ const statusLabelStyle: React.CSSProperties = {
   textTransform: "uppercase",
   color: "#7e87df",
   fontFamily: "'Manrope', sans-serif",
-  animation: "status-label-in 0.3s cubic-bezier(0.4, 0, 0.2, 1) both",
+};
+
+const checklistStyle: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: 8,
+  margin: "4px 0 24px",
+  paddingLeft: 2,
+};
+
+const checklistItemStyle: React.CSSProperties = {
+  display: "flex",
+  alignItems: "center",
+  gap: 12,
+  animation: "checklist-item-in 0.3s cubic-bezier(0.4, 0, 0.2, 1) both",
+};
+
+const checklistDetailStyle: React.CSSProperties = {
+  fontSize: 10,
+  fontWeight: 500,
+  letterSpacing: "0.08em",
+  textTransform: "none",
+  color: "rgba(126,135,223,0.55)",
+  fontFamily: "'Manrope', sans-serif",
 };
 
 const emptyStateStyle: React.CSSProperties = {
