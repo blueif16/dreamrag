@@ -338,7 +338,7 @@ Flow C widgets (spawn in this order):
 - Keep spawning — one widget per turn — until the flow's list is done. Don't stop after 1–2.
 - Check `Already-spawned widgets` in the human message. Pick the NEXT widget in the flow; never respawn one that's already there.
 - When the flow is complete, call show_text_response(message="Dashboard ready.") to finish.
-- Every agent-populated widget MUST include source_chunk_ids — copy the actual integer ids shown in "Available chunk IDs" / "Retrieved knowledge" (e.g. [52432, 11234]). Pick the TOP 3 most relevant chunks for this widget (by similarity / topical fit) — never more than 3. Never pass empty [] when chunks exist. Self-contained widgets take no args.
+- Every agent-populated widget MUST include source_chunk_ids — paste the integer ids of whichever chunks from "Available chunk IDs" / "Retrieved knowledge" actually backed this widget's content (e.g. [52432, 11234]). Never pass empty [] when chunks exist. Self-contained widgets take no args.
 - Write each widget's prose fields (meaning, subconscious_emotion, life_echo, excerpt, etc.) with 2–4 full sentences of concrete detail drawn directly from the chunk text — quote fragments, name symbols, use specifics. Don't hand-wave.
 - Never emit free text — widgets are the response.
 """
@@ -921,34 +921,19 @@ async def tools_node(state: OrchestratorState):
                         elif isinstance(item, str) and item.isdigit():
                             normalised.append(int(item))
                 if not normalised:
-                    # Pull top-3 by similarity from state.knowledge. Chunks are
-                    # already stored in descending sim order by search_dreams,
-                    # but sort explicitly in case of interleaved namespaces.
+                    # LLM forgot — paste every chunk id currently in state.knowledge.
                     kn = state.get("knowledge") or {}
-                    pool: list[tuple[float, int]] = []
+                    fallback: list[int] = []
                     for _ns, _chunks in kn.items():
                         for c in (_chunks or []):
-                            if not isinstance(c, dict) or not isinstance(c.get("id"), int):
-                                continue
-                            sim = c.get("similarity") or c.get("score") or 0.0
-                            if not isinstance(sim, (int, float)):
-                                sim = 0.0
-                            pool.append((float(sim), c["id"]))
-                    pool.sort(key=lambda x: x[0], reverse=True)
-                    fallback = [cid for _s, cid in pool[:3]]
+                            if isinstance(c, dict) and isinstance(c.get("id"), int):
+                                fallback.append(c["id"])
                     if fallback:
                         logger.warning(
                             f"[TOOLS] dumb widget '{name}' passed empty source_chunk_ids — "
-                            f"auto-filling top-3 from state.knowledge: {fallback}"
+                            f"auto-filling all {len(fallback)} from state.knowledge"
                         )
                         normalised = fallback
-                # Cap explicit ids too — if LLM over-cites, trim to 3.
-                if len(normalised) > 3:
-                    logger.info(
-                        f"[TOOLS] dumb widget '{name}' cited {len(normalised)} ids — "
-                        f"trimming to top-3: {normalised[:3]}"
-                    )
-                    normalised = normalised[:3]
                 args["source_chunk_ids"] = normalised
             new_widget = {"id": cfg.id, "type": "dumb", "props": args}
             current_active = list(state_updates.get("active_widgets", state.get("active_widgets") or []))
