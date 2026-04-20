@@ -144,11 +144,19 @@ async def search_dreams(query: str, namespace: str = "community_dreams", top_k: 
         rag = RAGStore(namespace=namespace)
         results = rag.search(query, top_k=top_k)
         logger.info(f"[search_dreams] namespace={namespace} query={query[:60]} → {len(results)} results")
+        if not results:
+            return {
+                "results": [],
+                "namespace": namespace,
+                "count": 0,
+                "stop": True,
+                "note": f"No matches in '{namespace}' for this query. Do NOT retry search_dreams — proceed without RAG context and answer from general knowledge.",
+            }
         return {"results": results, "namespace": namespace, "count": len(results)}
 
     except Exception as e:
         logger.error(f"[search_dreams] error: {e}")
-        return {"results": [], "error": str(e)}
+        return {"results": [], "error": str(e), "stop": True}
 
 
 # Exported tool list — picked up by examples/__init__.py:load_all_backend_tools()

@@ -12,11 +12,28 @@ Ask the user once, then cache for the whole session:
 
 | Variable | Purpose | How to obtain |
 |----------|---------|---------------|
-| `VM_IP` | External IP of `dreamrag-vm` | `gcloud compute instances describe dreamrag-vm --zone=us-central1-a --format='get(networkInterfaces[0].accessConfigs[0].natIP)'` |
-| `SSH_USER` | Linux user on the VM | Usually the gcloud account local-part; confirm via `gcloud compute ssh dreamrag-vm --command=whoami` |
-| `ZONE` | GCP zone | Default `us-central1-a` unless told otherwise |
+| `PROJECT` | GCP project id | `gcloud config get-value project` |
+| `ZONE` | GCP zone — **may not be `us-central1-a`** | L4 stockout is common; we have historically landed in `us-west1-a`. Confirm via `gcloud compute instances list --filter='name=dreamrag-vm' --format='value(zone.basename())'` |
+| `VM_IP` | External IP | `gcloud compute instances describe dreamrag-vm --zone=$ZONE --project=$PROJECT --format='get(networkInterfaces[0].accessConfigs[0].natIP)'` |
+| `SSH_USER` | Linux user on the VM | Usually the gcloud account local-part; confirm via `gcloud compute ssh dreamrag-vm --zone=$ZONE --command=whoami` |
 
-Do not prompt for Supabase creds — they already live in `frontend/backend/.env` and are mounted via `env_file` in compose.
+Do not prompt for Supabase creds — they already live in `frontend/backend/.env` and are mounted via `env_file` in compose. Supabase is shared between local dev and the GCP stack, so **data is already ingested — do NOT run `scripts/ingest.py` on the VM.**
+
+---
+
+## 0.5. First-Time Provision (Skip If VM Already Exists)
+
+If `gcloud compute instances describe dreamrag-vm` returns `NOT_FOUND`, you are on a fresh project or a new machine. Run the provisioning block in `CLAUDE.md` → "One-time VM provisioning" and "One-time VM setup (on the VM)" sections. The runbook there is the source of truth for:
+
+- Compute Engine API enablement
+- GPU quota request (`GPUS_ALL_REGIONS` global **and** `NVIDIA_L4_GPUS` regional — Education accounts start at 0 for both, require manual request)
+- VM `gcloud compute instances create` command (image family is `common-cu129-ubuntu-2204-nvidia-580`, boot disk 150GB)
+- L4 zone fallback list when `us-central1-a` reports `ZONE_RESOURCE_POOL_EXHAUSTED`
+- Docker install on the VM (DLVM image ships without Docker despite having `nvidia-ctk`)
+- Firewall rule for tcp:3000 and tcp:8000
+- Adding the VM to `~/.ssh/config` so Docker's SSH context can auth with the gcloud key
+
+Only proceed to §1 once `gcloud compute ssh dreamrag-vm --command='docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi -L'` prints the L4 GPU.
 
 ---
 
@@ -28,10 +45,14 @@ Run from `/Users/tk/Desktop/dreamrag`. All commands must exit 0.
 docker compose config --quiet                          # 1.1 YAML syntax valid
 docker compose config | grep -q 'enable_thinking'      # 1.2 JSON kwargs survived YAML parsing
 test -f frontend/backend/.env && grep -q SUPABASE_URL frontend/backend/.env  # 1.3 secrets present
-test -x scripts/smoke_gcp.sh                            # 1.4 smoke script executable
+test -x scripts/smoke_gcp.sh                           # 1.4 smoke script executable
+test -f frontend/.npmrc && grep -q 'legacy-peer-deps=true' frontend/.npmrc  # 1.5 legacy-peer-deps
+grep -q 'COPY package\*.json \.npmrc' frontend/Dockerfile                  # 1.6 Dockerfile copies .npmrc
 ```
 
 If 1.2 fails, the `--chat-template-kwargs` arg was mangled — re-check `docker-compose.yml` uses the list-form `command:` block, not the folded `>` scalar.
+
+If 1.5 or 1.6 fails, `npm ci` inside the frontend container will die on `next-themes@0.3.0` not accepting React 19 peer. The repo `.npmrc` sets `legacy-peer-deps=true`; the Dockerfile must COPY it alongside `package*.json`, otherwise the setting is dropped at build time.
 
 ---
 
@@ -85,18 +106,16 @@ All four services must reach `Up (healthy)` before Step 4. If a service stays `U
 
 ---
 
-## 4. One-time Data Ingest
+## 4. Data Ingest — Already Done, DO NOT Re-Run
 
-Run once per fresh Supabase project (idempotent otherwise — the script upserts):
+The Supabase project is shared between local dev and the GCP stack. All rows in `community_dreams` and `dream_knowledge` were ingested once from a laptop and persist across VM recreations, GPU detach/reattach, and full project wipes.
 
-```bash
-docker --context gcp-dreamrag compose exec backend python scripts/ingest.py
-```
+**Only re-run `scripts/ingest.py` if a fresh/different Supabase project is being used.** Otherwise skip straight to §5.
 
-Expected tail: `ingested N chunks into community_dreams` and `ingested M chunks into dream_knowledge`. A row count spot-check:
+Spot-check row counts (safe to run any time):
 
 ```bash
-docker --context gcp-dreamrag compose exec backend python - <<'PY'
+docker --context gcp-dreamrag compose exec -T backend .venv/bin/python - <<'PY'
 import os
 from supabase import create_client
 sb = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_SECRET_KEY"])
@@ -106,6 +125,8 @@ for ns in ("community_dreams", "dream_knowledge"):
     assert n.count > 0, f"namespace {ns} empty"
 PY
 ```
+
+Note: invoke the backend python via `.venv/bin/python`, NOT bare `python` — the Dockerfile installs deps into `/app/backend/.venv`, and the system python in the base image does not have `requests`, `supabase`, `httpx`, etc.
 
 ---
 
@@ -163,6 +184,12 @@ Failure modes this catches: tools arriving as `[]` at backend (see `docs/bug-too
 | Step 5 returns 500 | Supabase auth failed, `EMBED_BASE_URL` not wired | `docker compose exec backend env \| grep -E 'SUPABASE\|EMBED\|OPENAI'` — confirm overrides landed | If creds invalid, escalate; do not rotate keys |
 | Step 7 warm TTFT >2.5 s | Layers offloaded to CPU | `docker compose logs chat-model \| grep -E 'offloaded\|CUDA'` — confirm all layers on GPU | If `-ngl 99` isn't taking, escalate |
 | `nvidia-smi` shows 0% GPU util during chat | Container lost GPU access | `docker compose restart chat-model`; re-run smoke | If persists, ask user |
+| chat-model crash-loops with `CUDA error: out of memory in ggml_cuda_flash_attn_ext_mma_f16_case` | L4 shared-mem-per-block cap hit by FA kernel for Qwen3.6 head_dim=256 | Verify `docker-compose.yml` has chat-model `-ub 128` (NOT 512); recreate | If `-ub 128` still crashes, escalate before disabling `-fa on` |
+| chat-model fails `alloc_tensor_range: failed to allocate CUDA0 buffer` after a `compose up -d` with embed-model already healthy | Load-order: chat needs the ~17.5 GB VRAM window, embed (4–5 GB) is hogging it | Verify `depends_on: chat-model healthy` is on embed-model service; if missing, patch compose and `down && up` | Never bump `-ngl` below 99 to make room — ask user |
+| `npm ci` fails in frontend build with `ERESOLVE` on next-themes peer | `.npmrc` not copied into image | Check `frontend/Dockerfile` line for `COPY package*.json .npmrc ./` | If Dockerfile is correct but still fails, escalate |
+| llama-server errors `invalid argument: --embd-normalize` | Upstream removed the flag (moved to per-request JSON) | Delete the two `--embd-normalize`/`2` lines from embed-model `command:` — default L2 normalize already matches previous behavior | — |
+| Docker SSH context fails with `Host key verification failed` | Docker's plain SSH can't find the host key or the gcloud key | Add entry to `~/.ssh/config`: `Host <VM_IP>` / `User <SSH_USER>` / `IdentityFile ~/.ssh/google_compute_engine` / `StrictHostKeyChecking accept-new` | — |
+| Frontend reachable over LAN but not from browser | GCP firewall default-deny inbound on tcp:3000 | `gcloud compute firewall-rules create ... --rules=tcp:3000,tcp:8000 --target-tags=http-server` (VM must have `http-server` tag) | — |
 
 **Never do autonomously, even to unblock tests:**
 - `docker system prune`, `docker volume rm hf-cache`, or any flag that deletes downloaded models
@@ -201,3 +228,26 @@ Claude appends one block per smoke run below. Do not rewrite history — only ap
 - Outcome: demo-ready | needs follow-up (see below)
 - Follow-ups: <bullet list or "none">
 -->
+
+### 2026-04-19 — cold provision on nlp-school-488918 project
+- VM: dreamrag-vm / us-west1-a / 34.145.76.145 (us-central1-a L4 stocked out; also `us-central1-b` hit transient internal error; `us-west1-a` succeeded on first attempt)
+- Compose state: all four healthy after load-order + `-ub 128` fixes
+- Probes:
+  - [1–7] all pass (cold TTFT 179ms, warm 139ms — well under 2.5s budget)
+  - agent-turn probe: pass — Qwen3.6-35B emitted valid `search_dreams(query="dark ocean water subconscious", namespace="dream_knowledge", top_k=5)` tool call; `active_widgets` streamed to client
+- Observations: VRAM after stabilization ≈ 21.5/23 GB used; IQ4_XS fits with ordering fix but has <1 GB headroom
+- Actions taken during bring-up (all now captured in runbook + cheatsheet):
+  - Enabled Compute Engine API + requested `GPUS_ALL_REGIONS=1` (Education account defaulted to 0)
+  - Image family `common-cu124-ubuntu-2204` no longer exists → used `common-cu129-ubuntu-2204-nvidia-580`
+  - Installed Docker on VM (DLVM ships only with `nvidia-ctk`, not docker)
+  - Added VM to `~/.ssh/config` with `IdentityFile ~/.ssh/google_compute_engine` so Docker's SSH context authenticates
+  - Patched `frontend/Dockerfile` to COPY `.npmrc` (legacy-peer-deps) alongside `package*.json`
+  - Deleted obsolete `--embd-normalize 2` from embed-model `command:` (upstream removal)
+  - Dropped chat-model `-ub` from 512 → 128 (L4 FA shared-mem constraint)
+  - Added `depends_on: chat-model healthy` to embed-model (load-order VRAM contention)
+  - Added `ports: 8081/8082` on the two model services for in-VM smoke probing
+  - Fixed `scripts/smoke_gcp.sh` backend probe: `curl -fsS` → `-sS` so 422 is accepted
+  - Fixed `scripts/ingest.py` health check to derive URL from `EMBED_BASE_URL` instead of hardcoded `localhost:8082` (moot unless re-ingesting, but correct now)
+  - Opened GCP firewall rule `dreamrag-frontend-3000` for tcp:3000,8000 on tag `http-server`
+- Outcome: demo-ready. Frontend reachable at http://34.145.76.145:3000
+- Follow-ups: none for functionality. Optional: (a) remove `enable_thinking` deprecation by switching to `--reasoning off`; (b) monitor VRAM headroom — 1.5 GB is tight if context grows toward 32K.

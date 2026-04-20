@@ -1,63 +1,140 @@
 # DreamRAG — AI Dream Analysis with Dynamic Bento Dashboard
 
 > CS 6120 NLP Final Project — Northeastern University, Khoury College
-> **v2 — March 2026 — Fully Local Inference (Zero Cloud APIs)**
+> **v3 — April 2026 — Fully Local Inference (Zero Cloud APIs)**
 
 ---
 
-## Product Update — 2026-03-25
+## Product Update — 2026-04-20
 
-This snapshot reflects the current single-page frontend shell in `index.html`, with `preview.html` forwarding into that entry.
+The static HTML prototype (`preview.html` / `index.html` with hash routing) has been retired. The live app is a **Next.js 15 + React 19 + CopilotKit v2** frontend talking to a **LangGraph orchestrator** over the AG-UI protocol. The LLM no longer just "returns text" — it **spawns UI widgets onto a bento canvas through tool calls**, and widgets either display data directly (*dumb*) or hand chat control to a domain subagent (*smart*).
 
-The current UI is still a static prototype with shared styling in `theme.css`, but it now behaves as one web surface with hash-based view switching: `#home`, `#dashboard`, `#archive`, and `#profile`. The older files `homepage.html`, `dashboard.html`, `archive.html`, and `profile.html` are kept as reference fragments, not as the primary runtime entry. The product behavior described below captures the intended runtime architecture and backend responsibilities implied by those screens.
+### What changed since March
 
-### Frontend Architecture
+- **Runtime**: `frontend/` is a Next.js app (pages: `/`, `/dashboard`, `/archive`, `/profile`, `/chat`) served on `:3000`. The static HTML files are deleted.
+- **Agent**: `frontend/backend/agent/graph.py` holds a `StateGraph(OrchestratorState)` with an orchestrator node, a unified `tools_node`, and dynamically-registered subagent nodes per smart widget.
+- **Widget platform**: 18+ widgets auto-discovered from `frontend/examples/*/widgets/*/widget.config.ts`. Spawn tools for dumb widgets are routed through AG-UI to the client; smart-widget spawns are routed backend-side and flip `focused_agent` so a subagent owns chat.
+- **RAG tools wired**: `record_dream`, `search_dreams`, `get_symbol_graph`, `get_user_profile` live in `frontend/examples/dreams/tools.py` and hit Supabase pgvector (namespaces: `community_dreams`, `dream_knowledge`, `user_dreams`).
+- **Ingest**: `scripts/ingest.py` auto-detects what's missing per namespace. Sources now include DreamBank, SDDb, Dryad, plus Gutenberg-sourced Freud + Jung for the knowledge namespace.
+- **Deploy**: GCP L4 VM via a single root `docker-compose.yml` using a Docker SSH context. llama.cpp pulls GGUFs into an `hf-cache` volume on first boot; no bake, no manual download. L4-specific constraints pinned (`-ub 128`, fp16 KV, chat-before-embed load order).
 
-| Surface | Role | Current Prototype Surface | Intended Runtime Responsibility |
-|---------|------|---------------------------|---------------------------------|
-| `preview.html` | Entry route | Immediate redirect into the product | Bootstraps the app / hosted preview route |
-| `index.html` | Single-page shell | Owns the shared topbar, view switching, and unified app chrome | Becomes the main web app container |
-| `index.html#home` | Dream capture | Collect a new dream and start analysis | Create a dream record and launch analysis |
-| `index.html#dashboard` | Latest reading | Show the active dream, interpretation, follow-up chat, metrics, and sources | Read the latest dream, stream or fetch analysis, and continue contextual chat |
-| `index.html#archive` | Historical workspace | Browse saved dreams, inspect one dream, and continue archive-specific follow-up | Search, filter, compare, and reopen prior dream analyses |
-| `index.html#profile` | Long-term patterns | Summarize motifs, emotional climate, rhythm, and recurring threads | Serve user-level aggregates and recurring pattern insights |
-| `homepage.html`, `dashboard.html`, `archive.html`, `profile.html` | Reference fragments | Legacy standalone snapshots of each view | Editing reference only; no longer primary entrypoints |
+### System at a glance
 
-Shared frontend conventions in the prototype:
+```mermaid
+flowchart LR
+  User([User])
+  subgraph Browser
+    UI[Next.js 15 / React 19<br/>Bento canvas + chat pill]
+    CKClient[CopilotKit v2<br/>useFrontendTool / useCoAgent]
+  end
+  subgraph NextServer[Next.js server]
+    Runtime[/api/copilotkit<br/>CopilotKit runtime/]
+  end
+  subgraph Backend[FastAPI :8000]
+    AGUI[ag_ui_langgraph<br/>LangGraphAGUIAgent]
+    Graph[LangGraph<br/>OrchestratorState]
+  end
+  subgraph GPU[llama.cpp on GPU]
+    Chat[:8081 qwen3.6-35b-a3b<br/>MoE ~3B active]
+    Embed[:8082 qwen3-embedding-0.6b<br/>1024-dim]
+  end
+  subgraph Data[Supabase Postgres]
+    Docs[(documents<br/>pgvector + BM25)]
+    Rel[(doc_relations<br/>graph edges)]
+    Dreams[(user_dreams)]
+    Ckpt[(checkpoints)]
+  end
 
-- A persistent top navigation connects capture, latest reading, archive, and profile.
-- The same dream can be revisited through multiple surfaces: current reading, archive detail, and profile-level pattern summaries.
-- Source cards, follow-up prompts, and CTA buttons imply backend retrieval, provenance, and asynchronous analysis workflows even though they are not wired yet.
+  User --> UI
+  UI <--> CKClient
+  CKClient <-->|AG-UI events| Runtime
+  Runtime <-->|/copilotkit| AGUI
+  AGUI <--> Graph
+  Graph -->|chat + tool calls| Chat
+  Graph -->|embed| Embed
+  Graph -->|RRF + graph walk| Docs
+  Graph --> Rel
+  Graph --> Dreams
+  Graph -.checkpoint.-> Ckpt
+```
 
-### User Experience Flow
+### Orchestrator + widget lifecycle
 
-1. The user lands on `preview.html`, which forwards into `index.html#home`.
-2. On the `#home` view, the user writes a dream entry and starts analysis.
-3. The app creates a dream record, launches retrieval + interpretation, and switches into `index.html#dashboard` as the primary reading surface.
-4. On the `#dashboard` view, the user reads the interpretation, sees emotional and symbolic summaries, checks provenance links, and asks follow-up questions grounded in the same dream.
-5. The user switches to `index.html#archive` to revisit prior dreams, compare entries across time, and continue conversations from a saved dream context.
-6. The user switches to `index.html#profile` to zoom out from single dreams into recurring motifs, emotional trends, cadence, and long-term reflection.
-7. The loop repeats from the persistent top navigation when the user records another dream; the latest reading, archive, and profile aggregates all update over time.
+```mermaid
+flowchart TD
+  Start([user message]) --> Route{focused_agent<br/>set?}
+  Route -- no --> Orchestrator[orchestrator node<br/>binds: frontend tools,<br/>spawn tools, RAG tools]
+  Route -- yes --> Sub[subagent node<br/>domain tools +<br/>handoff_to_orchestrator]
+  Orchestrator -->|tool calls| ToolsNode[tools_node<br/>unified executor]
+  Sub -->|tool calls| ToolsNode
+  ToolsNode -->|spawn dumb widget| Emit[emit AG-UI<br/>tool call to client]
+  ToolsNode -->|spawn smart widget| Focus[set focused_agent<br/>+ pending_agent_message]
+  ToolsNode -->|record/search/profile| RAG[(Supabase +<br/>llama.cpp embed)]
+  Emit --> Client[client useFrontendTool<br/>renders widget]
+  Focus --> Sub
+  ToolsNode -->|after tools| Decide{route_after_tools}
+  Decide -->|intro_message| Sub
+  Decide -->|focused_agent| Sub
+  Decide -->|otherwise| End([END])
+```
 
-### Backend Functions Implied by the Prototype
+Smart widgets own chat until they call `handoff_to_orchestrator`; dumb widgets render optimistically on the client with a 1-turn backend sync via `_sync_dumb_widgets`.
 
-| Surface | Backend capabilities required |
-|---------|-------------------------------|
-| `preview.html` | Static hosting or route redirect only; analytics optional |
-| `index.html#home` | User/session resolution, create dream record, persist raw dream text, enqueue analysis job, return job status, expose latest reading pointer |
-| `index.html#dashboard` | Fetch latest dream + structured interpretation, emotion extraction, symbol extraction, recurrence metrics, atmosphere/relationship graph data, follow-up chat with dream context, related-dream retrieval, citation/provenance lookup |
-| `index.html#archive` | List user dreams, pagination, filtering, full-text/tag search, fetch single dream detail, compare selected dream to past entries, archive-scoped follow-up chat, citation retrieval for saved readings |
-| `index.html#profile` | Compute and serve user-level aggregates such as streaks, top symbols, emotional distribution, recurrence rhythm, lucidity trend, dream frequency heatmap, and recurring theme summaries |
+### Tool landscape
 
-Shared backend services implied across all pages:
+```mermaid
+flowchart LR
+  LLM[Qwen3.6-35B-A3B<br/>orchestrator LLM]
 
-- Authentication and ownership for per-user dream data.
-- Dream storage for raw entries, timestamps, tags, and archive state.
-- Analysis storage for interpretations, extracted motifs, emotional labels, recurrence signals, and provenance links.
-- Retrieval over personal dreams, community dream corpora, and academic interpretation sources.
-- Chat memory scoped to a dream and optionally to a saved archive thread.
-- Async job orchestration for analysis pipelines that may not complete synchronously.
-- User-level aggregation jobs that periodically update profile insights from the dream corpus.
+  subgraph RAGTools[RAG tools — examples/dreams/tools.py]
+    RD[record_dream<br/>embed + insert user_dreams]
+    SD[search_dreams<br/>RRF + graph walk]
+    GSG[get_symbol_graph<br/>co_occurs edges]
+    GUP[get_user_profile<br/>cached aggregates]
+  end
+
+  subgraph SpawnTools[Spawn tools — auto-discovered]
+    DumbSpawn[spawn_* dumb widgets<br/>render on client]
+    SmartSpawn[spawn_* smart widgets<br/>hand off chat to subagent]
+    Clear[clear_canvas]
+  end
+
+  subgraph Subagents[Smart-widget subagents]
+    ChatSub[dream_chat subagent]
+    OtherSub[… per smart widget]
+    Handoff[handoff_to_orchestrator]
+  end
+
+  LLM --> RD
+  LLM --> SD
+  LLM --> GSG
+  LLM --> GUP
+  LLM --> DumbSpawn
+  LLM --> SmartSpawn
+  LLM --> Clear
+  SmartSpawn --> ChatSub
+  SmartSpawn --> OtherSub
+  ChatSub --> Handoff
+  OtherSub --> Handoff
+  Handoff --> LLM
+
+  RD --> Supa[(Supabase:<br/>user_dreams)]
+  SD --> Supa2[(documents +<br/>doc_relations)]
+  GSG --> Supa2
+  GUP --> Supa3[(user_profiles)]
+```
+
+### Pages & their responsibilities (current Next.js routes)
+
+| Route | Role | Backend dependencies |
+|-------|------|----------------------|
+| `/` | Landing + 3D particle morph intro | Static; no backend |
+| `/chat` | Dream capture + streaming analysis | `record_dream`, spawn widgets, focused subagents |
+| `/dashboard` | Latest reading — bento canvas with interpretation, metrics, sources | `search_dreams`, `get_user_profile`, `get_symbol_graph`, widget stream |
+| `/archive` | Historical workspace — browse / reopen prior dreams | `search_dreams` (user namespace), per-dream re-analysis |
+| `/profile` | Long-term patterns — streaks, heatmap, top symbols, emotion distribution | `get_user_profile` (cached aggregates, recomputed on `record_dream`) |
+
+Shared services: per-user Supabase ownership, async widget streaming via AG-UI `STATE_DELTA`, chunk-level provenance from `search_context_mesh` carried through `chunk_registry` on every widget.
 
 ## 1. Vision
 

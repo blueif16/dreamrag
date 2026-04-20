@@ -1,59 +1,23 @@
 -- ============================================================================
--- DreamRAG: Supabase GraphRAG Schema
--- Qwen3-Embedding-0.6b: 1024 dimensions (MRL, native max)
--- ============================================================================
-
--- 1. Extensions
-CREATE EXTENSION IF NOT EXISTS vector;
-
--- 2. Documents table (community_dreams + dream_knowledge namespaces)
-CREATE TABLE IF NOT EXISTS documents (
-  id         BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-  content    TEXT NOT NULL,
-  metadata   JSONB DEFAULT '{}',       -- {"source": "dreambank", "type": "dream_narrative"}
-  namespace  TEXT DEFAULT 'default',
-  content_hash TEXT,                   -- deduplication
-  embedding  vector(1024),             -- qwen3-embedding-0.6b @ 1024 dims
-
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-
-  CONSTRAINT documents_content_check CHECK (content IS NOT NULL)
-);
-
--- 3. Graph edges
-CREATE TABLE IF NOT EXISTS doc_relations (
-  id        BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
-  source_id BIGINT REFERENCES documents(id) ON DELETE CASCADE,
-  target_id BIGINT REFERENCES documents(id) ON DELETE CASCADE,
-  type      TEXT NOT NULL,   -- symbolizes | similar_to | co_occurs | follows | interprets | contradicts | coded_as
-  properties JSONB DEFAULT '{}',   -- {"weight": 0.9, "theory": "jungian"}
-  namespace TEXT DEFAULT 'default',
-  created_at TIMESTAMPTZ DEFAULT NOW(),
-
-  UNIQUE(source_id, target_id, type, namespace)
-);
-
--- 4. Indexes
-
--- Vector similarity (HNSW for fast ANN search)
-CREATE INDEX IF NOT EXISTS idx_docs_embedding
-  ON documents USING hnsw (embedding vector_cosine_ops);
-
--- Full-text search (BM25-style keyword matching)
-CREATE INDEX IF NOT EXISTS idx_docs_fts
-  ON documents USING GIN (to_tsvector('english', content));
-
--- Namespace isolation
-CREATE INDEX IF NOT EXISTS idx_docs_namespace ON documents(namespace);
-CREATE INDEX IF NOT EXISTS idx_docs_hash ON documents(content_hash);
-
--- Graph traversal
-CREATE INDEX IF NOT EXISTS idx_rels_source ON doc_relations(source_id);
-CREATE INDEX IF NOT EXISTS idx_rels_target ON doc_relations(target_id);
-CREATE INDEX IF NOT EXISTS idx_rels_namespace ON doc_relations(namespace);
-
--- ============================================================================
--- 5. SOTA Search: Hybrid RRF (BM25 + Vector) + Recursive Graph Traversal
+-- Migration 005: Fix search_context_mesh (42702 ambiguous "id") and
+-- search_vector (HNSW post-filter starves sparse namespaces, e.g.
+-- dream_knowledge with ~2k of ~32k rows returned 0 results).
+--
+-- Root causes:
+--   1. search_context_mesh is plpgsql and has `RETURNS TABLE (id BIGINT, ...,
+--      depth INT)`. Inside the function body, bare `id` / `depth` in CTEs
+--      collide with these OUT parameters, producing 42702 "ambiguous column
+--      reference". Fix: declare `#variable_conflict use_column` and alias
+--      CTE columns (doc_id etc.) so the planner has no ambiguity.
+--   2. search_vector uses `ORDER BY embedding <=> q LIMIT k` with HNSW +
+--      `WHERE filter_namespace = ...`. pgvector HNSW does index scan with
+--      ef_search=40 (default), then post-filters. Sparse namespaces lose all
+--      candidates after filtering. Fix: bump ef_search to 200 inside the
+--      function, and oversample candidates in an inner subquery before
+--      applying the namespace filter.
+--
+-- Apply via Supabase SQL editor (paste this whole file and RUN).
+-- Safe to re-run (CREATE OR REPLACE).
 -- ============================================================================
 
 CREATE OR REPLACE FUNCTION search_context_mesh(
@@ -68,7 +32,7 @@ RETURNS TABLE (
   id          BIGINT,
   content     TEXT,
   metadata    JSONB,
-  source_type TEXT,   -- 'seed' | relation type (symbolizes, co_occurs, …)
+  source_type TEXT,
   score       FLOAT,
   depth       INT
 )
@@ -76,13 +40,10 @@ LANGUAGE plpgsql STABLE
 AS $$
 #variable_conflict use_column
 BEGIN
-  -- Oversample HNSW candidates so namespace-filtered search still returns rows
   PERFORM set_config('hnsw.ef_search', '200', true);
 
   RETURN QUERY
   WITH RECURSIVE
-
-  -- A. Full-text search (keyword / BM25-style)
   fts AS (
     SELECT
       d.id AS doc_id,
@@ -96,9 +57,6 @@ BEGIN
   fts_ranked AS (
     SELECT doc_id, ROW_NUMBER() OVER (ORDER BY rank DESC) AS rank_pos FROM fts
   ),
-
-  -- B. Vector search (cosine similarity) — oversample, then filter by namespace
-  --    so HNSW post-filtering doesn't starve sparse namespaces.
   vec_raw AS (
     SELECT
       d.id AS doc_id,
@@ -118,8 +76,6 @@ BEGIN
   vec_ranked AS (
     SELECT doc_id, ROW_NUMBER() OVER (ORDER BY dist) AS rank_pos FROM vec
   ),
-
-  -- C. Reciprocal Rank Fusion
   rrf AS (
     SELECT
       COALESCE(f.doc_id, v.doc_id) AS doc_id,
@@ -131,10 +87,7 @@ BEGIN
   seeds AS (
     SELECT doc_id, rrf_score FROM rrf ORDER BY rrf_score DESC LIMIT match_count
   ),
-
-  -- D. Graph expansion (recursive CTE, depth-limited, cycle-safe)
   graph AS (
-    -- Seed documents
     SELECT
       d.id AS doc_id, d.content AS content, d.metadata AS metadata,
       'seed'::TEXT AS source_type,
@@ -146,11 +99,10 @@ BEGIN
 
     UNION ALL
 
-    -- Traverse outgoing edges
     SELECT
       d.id AS doc_id, d.content AS content, d.metadata AS metadata,
       r.type          AS source_type,
-      g.score * 0.8   AS score,   -- 20% score decay per hop
+      g.score * 0.8   AS score,
       g.depth + 1,
       g.path || d.id
     FROM graph g
@@ -160,8 +112,6 @@ BEGIN
       AND NOT d.id = ANY(g.path)
       AND (filter_namespace IS NULL OR d.namespace = filter_namespace)
   )
-
-  -- Return best score per unique document (map doc_id back to the OUT `id`)
   SELECT DISTINCT ON (graph.doc_id)
     graph.doc_id AS id,
     graph.content,
@@ -174,9 +124,6 @@ BEGIN
 END;
 $$;
 
--- ============================================================================
--- 6. Fast vector-only search (skip graph, for low-latency cases)
--- ============================================================================
 
 CREATE OR REPLACE FUNCTION search_vector(
   query_embedding  vector(1024),
@@ -188,9 +135,6 @@ LANGUAGE plpgsql STABLE
 AS $$
 #variable_conflict use_column
 BEGIN
-  -- HNSW returns ef_search neighbours then post-filters by namespace. For
-  -- sparse namespaces (e.g. dream_knowledge ≈ 2k of 32k rows), the default
-  -- ef_search=40 often yields zero matches after filtering. Oversample.
   PERFORM set_config('hnsw.ef_search', '200', true);
 
   RETURN QUERY

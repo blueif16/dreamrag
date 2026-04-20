@@ -8,10 +8,16 @@ import warnings
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 # Data-first: enable logging for message flow
+_log_level = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=getattr(logging, _log_level, logging.INFO),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
+# Silence HTTP-library DEBUG spam (hpack/h2/httpcore) even if root is DEBUG
+for noisy in ("hpack", "hpack.hpack", "hpack.table", "h2", "h2.connection",
+              "h2.stream", "httpcore", "httpcore.connection", "httpcore.http2",
+              "httpcore.http11", "httpx"):
+    logging.getLogger(noisy).setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
 # Suppress Pydantic warnings from third-party libraries about unsupported Field attributes
@@ -66,6 +72,10 @@ add_langgraph_fastapi_endpoint(
         name="orchestrator",
         description="Widget platform orchestrator agent",
         graph=graph,
+        # ag_ui_langgraph merges this into the runtime RunnableConfig and
+        # overrides the graph's compile-time .with_config(), so the bump
+        # has to live here — not on workflow.compile().
+        config={"recursion_limit": 500},
     ),
     path="/copilotkit",
 )

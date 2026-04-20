@@ -34,7 +34,7 @@ curl -fsS "$EMBED/v1/embeddings" \
   && pass "embed dim=1024" || fail "embed dim"
 
 echo "[5/7] backend /copilotkit reachable"
-CODE=$(curl -fsS -o /dev/null -w '%{http_code}' -X POST "$BACKEND/copilotkit" -H 'Content-Type: application/json' -d '{}' || echo 000)
+CODE=$(curl -sS -o /dev/null -w '%{http_code}' -X POST "$BACKEND/copilotkit" -H 'Content-Type: application/json' -d '{}' || echo 000)
 [[ "$CODE" =~ ^(200|400|405|422)$ ]] && pass "backend reachable ($CODE)" || fail "backend $CODE"
 
 echo "[6/7] frontend serving"

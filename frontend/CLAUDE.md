@@ -212,33 +212,83 @@ All services (llama.cpp embedding + llama.cpp chat + FastAPI backend + Next.js f
 
 Target VM: L4 24GB. Chat model: `unsloth/Qwen3.6-35B-A3B-GGUF:UD-IQ4_XS` (MoE — ~17.7GB at IQ4_XS, ~3B active params per token). IQ4_XS is chosen over UD-Q4_K_XL to leave ~5GB headroom for fp16 KV cache at 32K context + CUDA buffers. Do **not** quantise KV — `-ctk f16 -ctv f16` is required for tool-call argument fidelity in this agentic RAG workload.
 
-### One-time VM setup
-```bash
-# SSH into the GCP VM and run:
-# 1. Install Docker + NVIDIA Container Toolkit
-curl -fsSL https://get.docker.com | sh
-curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-ct.gpg
-# follow https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/install-guide.html
-sudo nvidia-ctk runtime configure --runtime=docker && sudo systemctl restart docker
+### L4-specific constraints (do not change without retesting)
 
-# 2. Models auto-download on first `docker compose up` via llama.cpp's `-hf` flag
-#    into the `hf-cache` named volume. No manual download needed.
-#    If you prefer preloading: `docker volume create hf-cache` then run a throwaway
-#    puller: `docker run --rm -v hf-cache:/root/.cache/huggingface ghcr.io/ggml-org/llama.cpp:server-cuda \
-#      -hf unsloth/Qwen3.6-35B-A3B-GGUF:UD-IQ4_XS --list-loras` (exits after download).
+- **chat-model `-ub 128`** (not 512). L4 (sm_89) caps dynamic shared memory per block at ~100KB. Qwen3.6's `n_embd_head_k_all = 256` makes the FA-MMA kernel request more than that at `-ub 512`, crashing during warmup (`CUDA error: out of memory in ggml_cuda_flash_attn_ext_mma_f16_case`). `-ub 128` keeps the kernel under the shared-mem budget; no measurable perf loss on single-user serving.
+- **Load order: chat-model must come up before embed-model.** Enforced by `depends_on: chat-model healthy` on embed-model. Chat needs ~17.5GB free VRAM to load; if embed (4–5GB) is already resident, chat runs out during model buffer alloc. Never reorder.
+- **Do NOT turn off `-fa on` or quantise KV to work around L4 issues.** Both are correctness-critical for tool-call JSON fidelity. If you hit a real FA/KV problem, escalate — do not downgrade silently.
+
+### One-time VM provisioning (from laptop)
+
+```bash
+# 0. Enable Compute Engine API if first time in project
+gcloud services enable compute.googleapis.com --project=$PROJECT
+
+# 1. GPU quota (Education / new projects start at 0). Must request BOTH:
+#    - "GPUs (all regions)" global → at least 1
+#    - "NVIDIA L4 GPUs" in your chosen region → at least 1
+#    Submit via Console → IAM & Admin → Quotas. Approval is usually <10 min,
+#    but Education accounts can take up to 2 business days.
+
+# 2. Create VM. L4 stock varies by zone — if us-central1-a returns
+#    ZONE_RESOURCE_POOL_EXHAUSTED, try us-west1-a, us-east4-c, us-east1-d in turn.
+gcloud compute instances create dreamrag-vm \
+  --project=$PROJECT \
+  --zone=us-west1-a \
+  --machine-type=g2-standard-8 \
+  --accelerator=type=nvidia-l4,count=1 \
+  --maintenance-policy=TERMINATE \
+  --image-family=common-cu129-ubuntu-2204-nvidia-580 \
+  --image-project=deeplearning-platform-release \
+  --boot-disk-size=150GB \
+  --boot-disk-type=pd-balanced \
+  --metadata="install-nvidia-driver=True" \
+  --tags=http-server,https-server
+# Image family changes over time — verify with:
+#   gcloud compute images list --project=deeplearning-platform-release --filter="family~cu12.*ubuntu"
+# 150GB boot disk is required: ~18GB GGUFs + docker layers + OS; default 50GB overflows.
+
+# 3. Firewall rule for demo access (frontend :3000, backend :8000)
+gcloud compute firewall-rules create dreamrag-ports \
+  --project=$PROJECT --direction=INGRESS --action=ALLOW \
+  --rules=tcp:3000,tcp:8000 --source-ranges=0.0.0.0/0 --target-tags=http-server
 ```
 
-### Deploy from local machine
+### One-time VM setup (on the VM)
+
+DLVM `common-cu129` ships with the NVIDIA driver + `nvidia-ctk` preinstalled, but NOT Docker. Run this once per new VM:
+
 ```bash
+gcloud compute ssh dreamrag-vm --zone=$ZONE --command='
+  curl -fsSL https://get.docker.com | sudo sh
+  sudo nvidia-ctk runtime configure --runtime=docker
+  sudo systemctl restart docker
+  sudo usermod -aG docker $USER
+  # verify GPU visible inside containers:
+  sudo docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi -L
+'
+```
+
+Models auto-download on first `docker compose up` via llama.cpp's `-hf` flag into the `hf-cache` named volume — no manual download step.
+
+### Deploy from local machine
+
+```bash
+# One-time: add VM to ~/.ssh/config so Docker's SSH context uses the gcloud key
+#   (Docker's SSH context uses plain ssh, not gcloud ssh)
+cat >> ~/.ssh/config <<EOF
+
+Host $GCP_VM_IP
+    User $SSH_USER
+    IdentityFile ~/.ssh/google_compute_engine
+    StrictHostKeyChecking accept-new
+EOF
+
 # One-time: create SSH context pointing at GCP VM
-docker context create gcp-dreamrag --docker host=ssh://USER@GCP_VM_IP
-docker context use gcp-dreamrag
+docker context create gcp-dreamrag --docker host=ssh://$SSH_USER@$GCP_VM_IP
 
-# Deploy (builds images on the VM, starts all services)
-docker compose up -d --build
-
-# Switch back to local
-docker context use default
+# Deploy (builds images on the VM using local source, starts all services)
+docker --context gcp-dreamrag compose up -d --build
 ```
 
 The backend reads `frontend/backend/.env` for Supabase creds and overrides `EMBED_BASE_URL` / LLM settings to point to the in-compose service hostnames (`chat-model`, `embed-model`).

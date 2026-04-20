@@ -81,10 +81,18 @@ export default function Page() {
     return unsubscribe;
   }, [agent]);
 
-  // Clear status strip when run ends
+  // Clear status strip when run ends. Only drop isLoading on a real
+  // true→false transition — otherwise this effect fires on mount and
+  // immediately overrides setIsLoading(true) from the sessionStorage path.
   const isRunning = agent.isRunning;
+  const hasRunStartedRef = useRef(false);
   useEffect(() => {
-    if (!isRunning) setActiveTool(null);
+    if (isRunning) {
+      hasRunStartedRef.current = true;
+    } else {
+      setActiveTool(null);
+      if (hasRunStartedRef.current) setIsLoading(false);
+    }
   }, [isRunning]);
 
   useEffect(() => {
@@ -182,16 +190,16 @@ export default function Page() {
 
         {/* Widget grid or loading skeleton */}
         <div style={gridWrapStyle}>
-          {lastUserMessage && (hasWidgets || isRunning) && (
+          {lastUserMessage && (hasWidgets || isRunning || isLoading) && (
             <div style={userQuestionStyle}>
               <span style={userQuestionLabelStyle}>You asked</span>
               <span style={userQuestionTextStyle}>{lastUserMessage}</span>
             </div>
           )}
-          {isRunning && <StatusStrip toolName={activeTool} />}
+          {(isRunning || isLoading) && <StatusStrip toolName={activeTool} />}
           {hasWidgets ? (
             <WidgetPanel spawned={spawned} />
-          ) : isRunning ? (
+          ) : isRunning || isLoading ? (
             <SkeletonCards />
           ) : (
             <EmptyState />

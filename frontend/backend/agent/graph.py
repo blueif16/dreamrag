@@ -747,7 +747,7 @@ def create_graph():
 
     return workflow.compile(
         checkpointer=MemorySaver(),
-    ).with_config({"recursion_limit": 25})
+    ).with_config({"recursion_limit": 500})
 
 
 graph = create_graph()
